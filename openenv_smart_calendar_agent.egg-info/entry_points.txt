@@ -1,0 +1,2 @@
+[console_scripts]
+server = smart_calendar_agent.server.app:main
