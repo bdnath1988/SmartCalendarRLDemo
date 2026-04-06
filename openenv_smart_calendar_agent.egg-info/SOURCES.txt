@@ -1,8 +1,12 @@
 README.md
+__init__.py
+client.py
+models.py
 pyproject.toml
 ./__init__.py
 ./client.py
 ./models.py
+./test_env.py
 openenv_smart_calendar_agent.egg-info/PKG-INFO
 openenv_smart_calendar_agent.egg-info/SOURCES.txt
 openenv_smart_calendar_agent.egg-info/dependency_links.txt

@@ -27,37 +27,57 @@ Usage:
     # Or run directly:
     python -m server.app
 """
-from fastapi import FastAPI, HTTPException
+try:
+    from openenv.core.env_server.http_server import create_app
+except Exception as e:  # pragma: no cover
+    raise ImportError(
+        "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
+    ) from e
 
 try:
+    from ..models import MyCalendarAction, MyCalendarObservation
     from .smart_calendar_agent_environment import CalendarEnv
 except ImportError:
-    from smart_calendar_agent_environment import CalendarEnv
+    from models import MyCalendarAction, MyCalendarObservation
+    from server.smart_calendar_agent_environment import CalendarEnv
 
-try:
-    from ..models import Action, Observation, State
-except ImportError:
-    from models import Action, Observation, State
 
-app = FastAPI(title="OpenEnv Calendar API")
-env = CalendarEnv()
+app = create_app(
+        CalendarEnv,
+        MyCalendarAction,
+        MyCalendarObservation,
+        env_name="calendar_env",
+        max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
+    )
 
-@app.post("/reset", response_model=Observation)
-def reset(task_id: int = 0):
-    if task_id not in [0, 1, 2]:
-        raise HTTPException(status_code=400, detail="Invalid Task ID")
-    return env.reset(task_id)
+def main(host: str = "0.0.0.0", port: int = 8000):
+    """
+    Entry point for direct execution via uv run or python -m.
 
-@app.post("/step")
-def step(action: Action):
-    obs, reward, done, info = env.step(action)
-    return {
-        "observation": obs,
-        "reward": reward,
-        "done": done,
-        "info": info
-    }
+    This function enables running the server without Docker:
+        uv run --project . server
+        uv run --project . server --port 8001
+        python -m first_rl_demo.server.app
 
-@app.get("/state", response_model=State)
-def get_state():
-    return env.get_internal_state()
+    Args:
+        host: Host address to bind to (default: "0.0.0.0")
+        port: Port number to listen on (default: 8000)
+
+    For production deployments, consider using uvicorn directly with
+    multiple workers:
+        uvicorn first_rl_demo.server.app:app --workers 4
+    """
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port)
+
+    
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+    main(port=args.port)

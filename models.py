@@ -10,6 +10,7 @@ Data models for the Smart Calendar Agent Environment.
 The smart_calendar_agent environment is a simple test environment that echoes back messages.
 """
 
+from openenv.core.env_server.types import Action, Observation, State
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
@@ -30,22 +31,20 @@ class CalendarEvent(BaseModel):
 
 
 # 2. Action
-class Action(BaseModel):
-    command: Literal["create", "delete", "search", "wait"]
-    args: Dict[str, Any] = Field(default_factory=dict)
+class MyCalendarAction(Action):
+    command: Literal["block", "free", "search"]
+    calendar: Dict[str, list]
+    response: Dict[str, str]
 
 
 # 3. Observation
-class Observation(BaseModel):
-    current_time: str
-    events: List[CalendarEvent]
-    user_preferences: str
-    last_action_status: str
+class MyCalendarObservation(Observation):
+    action_status: str
+    score: float
     done: bool
 
 
 # 4. Internal State
-class State(BaseModel):
+class MyCalendarState(State):
     task_id: int
     steps_taken: int
-    max_steps: int = 10
