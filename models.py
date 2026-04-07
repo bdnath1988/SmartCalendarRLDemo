@@ -4,95 +4,63 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""
-Data models for the Smart Calendar Agent Environment.
-
-The smart_calendar_agent environment is a simple test environment that echoes back messages.
-"""
-
-# from openenv.core.env_server.types import Action, Observation, State
-# from pydantic import BaseModel, Field, ValidationInfo, field_validator
-# from typing import List, Optional, Dict, Any, Literal
-# from datetime import datetime
-
-# # 1. Calendar Event
-# class CalendarEvent(BaseModel):
-#     id: str = Field(description="Unique ID for the event")
-#     title: str = Field(description="Name of the meeting")
-#     start: datetime = Field(description="Start time (ISO 8601)")
-#     end: datetime = Field(description="End time (ISO 8601)")
-
-#     @field_validator("end")
-#     def check_time(cls, v, info: ValidationInfo):
-#         start = info.data.get("start") if info.data else None
-#         if start is not None and v <= start:
-#             raise ValueError("End must be after start")
-#         return v
-
-
-# # 2. Action
-# class MyCalendarAction(Action):
-#     command: Literal["block", "free", "search"]
-#     calendar: Dict[str, list]
-#     response: Dict[str, str]
-
-
-# # 3. Observation
-# class MyCalendarObservation(Observation):
-#     action_status: str
-#     score: float
-#     done: bool
-
-
-# # 4. Internal State
-# class MyCalendarState(State):
-#     task_id: int
-#     steps_taken: int
+"""Data models for the Smart Calendar Agent Environment."""
 
 from openenv.core.env_server.types import Action, Observation, State
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime
 
 
 # 1. Calendar Event
 class CalendarEvent(BaseModel):
+    """Represents a calendar event with a unique identifier and title."""
     id: str = Field(description="Unique ID for the event")
-    title: str = Field(description="Name of the meeting")
-    start: datetime = Field(description="Start time (ISO 8601)")
-    end: datetime = Field(description="End time (ISO 8601)")
+    title: str = Field(description="Title of the event")
 
-    @field_validator("end")
-    def check_time(cls, v, info: ValidationInfo):
-        start = info.data.get("start") if info.data else None
-        if start is not None and v <= start:
-            raise ValueError("End must be after start")
-        return v
+# 2. Slot
+class Slot(BaseModel):
+    """Represents a time slot, optionally linked to a calendar event."""
+    start_time: datetime = Field(description="Start time (ISO 8601)")
+    end_time: datetime = Field(description="End time (ISO 8601)")
+    event: Optional[CalendarEvent] = Field(default=None, description="Optional event assigned to this slot")
+
+# 3. Expected Action
+class ExpectedAction(BaseModel):
+    """Describes an action the calendar agent is expected to perform."""
+    command: Literal["add_event", "move_event", "delete_event", "search_slot"] = Field(description="command (mandatory)")
+    slot: Optional[Slot] = Field(default=None, description="Time slot for the action")
+    event_id: Optional[str] = Field(default=None, description="Event ID")
+
+# 4. Performed Action
+class PerformedAction(BaseModel):
+    """Represents the result of a performed action, including success and optional slot details."""
+    success: bool = Field(description="Whether the action was successful")
+    id: Optional[str] = Field(default=None, description="Optional ID")
+    slot: Optional[Slot] = Field(default=None, description="Optional time range")
 
 
-# 2. Action
+# 5. Calendar
+class Calendar(BaseModel):
+    """Represents a calendar containing a list of available slots."""
+    slots: List[Slot] = Field(description="List of slots")
+
+# 6. My Calendar Action
 class MyCalendarAction(Action):
-    action_type: Literal["add_event", "move_event", "delete_event"]
-
-    event: Optional[CalendarEvent] = None
-    event_id: Optional[str] = None
-
-    new_start: Optional[datetime] = None
-    new_end: Optional[datetime] = None
+    """Encapsulates a calendar action with expected and actual performed details."""
+    expected_action: ExpectedAction = Field(description="Expected action to perform")
+    performed_action: PerformedAction = Field(description="Action that was actually performed")
 
 
 # 3. Observation
 class MyCalendarObservation(Observation):
-    events: List[CalendarEvent]
-    message: str
-    reward: float
-    done: bool
+    """Represents observations returned from the calendar environment."""
+    message: str = Field(description="Observation message")
+    reward: float = Field(description="Reward signal for the agent")
+    done: bool = Field(description="Whether the episode is finished")
 
 
 # 4. Internal State
 class MyCalendarState(State):
-    episode_id: str
-    step_count: int
-
-    task_id: int
-    steps_taken: int
+    """Tracks the internal state of the calendar environment."""
+    calendar: Calendar = Field(description="Current calendar state")
