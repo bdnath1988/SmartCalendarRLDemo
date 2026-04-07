@@ -1,7 +1,15 @@
-spec_version: 1
-name: smart_calendar_agent
-type: space
-runtime: fastapi
-app: server.app:app
-port: 8000
+# name: smart_calendar_agent
 
+tasks:
+  - name: add_event
+    description: Add event without conflict
+
+  - name: resolve_conflict
+    description: Fix overlapping events
+
+  - name: optimize_schedule
+    description: Improve spacing between events
+
+reward:
+  success: 1
+  penalty: -1

@@ -10,10 +10,50 @@ Data models for the Smart Calendar Agent Environment.
 The smart_calendar_agent environment is a simple test environment that echoes back messages.
 """
 
+# from openenv.core.env_server.types import Action, Observation, State
+# from pydantic import BaseModel, Field, ValidationInfo, field_validator
+# from typing import List, Optional, Dict, Any, Literal
+# from datetime import datetime
+
+# # 1. Calendar Event
+# class CalendarEvent(BaseModel):
+#     id: str = Field(description="Unique ID for the event")
+#     title: str = Field(description="Name of the meeting")
+#     start: datetime = Field(description="Start time (ISO 8601)")
+#     end: datetime = Field(description="End time (ISO 8601)")
+
+#     @field_validator("end")
+#     def check_time(cls, v, info: ValidationInfo):
+#         start = info.data.get("start") if info.data else None
+#         if start is not None and v <= start:
+#             raise ValueError("End must be after start")
+#         return v
+
+
+# # 2. Action
+# class MyCalendarAction(Action):
+#     command: Literal["block", "free", "search"]
+#     calendar: Dict[str, list]
+#     response: Dict[str, str]
+
+
+# # 3. Observation
+# class MyCalendarObservation(Observation):
+#     action_status: str
+#     score: float
+#     done: bool
+
+
+# # 4. Internal State
+# class MyCalendarState(State):
+#     task_id: int
+#     steps_taken: int
+
 from openenv.core.env_server.types import Action, Observation, State
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Literal
 from datetime import datetime
+
 
 # 1. Calendar Event
 class CalendarEvent(BaseModel):
@@ -32,19 +72,27 @@ class CalendarEvent(BaseModel):
 
 # 2. Action
 class MyCalendarAction(Action):
-    command: Literal["block", "free", "search"]
-    calendar: Dict[str, list]
-    response: Dict[str, str]
+    action_type: Literal["add_event", "move_event", "delete_event"]
+
+    event: Optional[CalendarEvent] = None
+    event_id: Optional[str] = None
+
+    new_start: Optional[datetime] = None
+    new_end: Optional[datetime] = None
 
 
 # 3. Observation
 class MyCalendarObservation(Observation):
-    action_status: str
-    score: float
+    events: List[CalendarEvent]
+    message: str
+    reward: float
     done: bool
 
 
 # 4. Internal State
 class MyCalendarState(State):
+    episode_id: str
+    step_count: int
+
     task_id: int
     steps_taken: int
