@@ -75,6 +75,7 @@ from openenv.core.env_server.interfaces import Environment
 from typing import Tuple, List, Optional
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
+import uuid
 
 try:
     from ..models import MyCalendarAction, MyCalendarObservation,  MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction
@@ -192,7 +193,7 @@ class ActionHandlerFactory:
 
 class CalendarEnv(Environment):
     def __init__(self):
-        self.current_task_id = 0
+        self.current_task_id = str(uuid.uuid4())
         self.steps = 0
         self.max_steps = 10
         self.calendar = self._build_daily_calendar()
@@ -200,7 +201,7 @@ class CalendarEnv(Environment):
     # ---------------- RESET ----------------
     def reset(self) -> MyCalendarObservation:
         self.calendar = self._build_daily_calendar()
-        self.current_task_id = 0
+        self.current_task_id = str(uuid.uuid4())
         self.steps = 0
 
         return MyCalendarObservation(
@@ -212,6 +213,7 @@ class CalendarEnv(Environment):
     # ---------------- STEP ----------------
     def step(self, action: MyCalendarAction) -> MyCalendarObservation:
         self.steps += 1
+        self.current_task_id = str(uuid.uuid4())
         done = self.steps >= self.max_steps
 
         expected = action.expected_action
@@ -219,7 +221,7 @@ class CalendarEnv(Environment):
 
         # Get the appropriate handler and execute
         try:
-            handler = ActionHandlerFactory.get_handler(expected.action_type, self.calendar)
+            handler = ActionHandlerFactory.get_handler(expected.command, self.calendar)
             reward, message = handler.execute(expected, performed)
         except ValueError as e:
             reward, message = -1.0, str(e)
