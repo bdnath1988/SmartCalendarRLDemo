@@ -15,7 +15,7 @@ from datetime import datetime
 # 1. Calendar Event
 class CalendarEvent(BaseModel):
     """Represents a calendar event with a unique identifier and title."""
-    id: str = Field(description="Unique ID for the event")
+    event_id: str = Field(description="Unique ID for the event")
     title: str = Field(description="Title of the event")
 
 # 2. Slot
@@ -36,7 +36,7 @@ class ExpectedAction(BaseModel):
 class PerformedAction(BaseModel):
     """Represents the result of a performed action, including success and optional slot details."""
     success: bool = Field(description="Whether the action was successful")
-    id: Optional[str] = Field(default=None, description="Optional ID")
+    event_id: Optional[str] = Field(default=None, description="Optional ID")
     slot: Optional[Slot] = Field(default=None, description="Optional time range")
 
 
@@ -56,8 +56,6 @@ class MyCalendarAction(Action):
 class MyCalendarObservation(Observation):
     """Represents observations returned from the calendar environment."""
     message: str = Field(description="Observation message")
-    reward: float = Field(description="Reward signal for the agent")
-    done: bool = Field(description="Whether the episode is finished")
 
 
 # 4. Internal State

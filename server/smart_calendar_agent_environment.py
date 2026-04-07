@@ -72,31 +72,138 @@ Perfect for testing HTTP server infrastructure.
 #         return self.state
     
 from openenv.core.env_server.interfaces import Environment
-from typing import Tuple, List
-from datetime import datetime
-import random
+from typing import Tuple, List, Optional
+from datetime import datetime, timedelta
+from abc import ABC, abstractmethod
 
 try:
-    from ..models import MyCalendarAction, MyCalendarObservation, CalendarEvent, MyCalendarState
+    from ..models import MyCalendarAction, MyCalendarObservation,  MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction
 except ImportError:
-    from models import MyCalendarAction, MyCalendarObservation, CalendarEvent, MyCalendarState
+    from models import MyCalendarAction, MyCalendarObservation, MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction
+
+
+# ---------------- ACTION HANDLERS (Strategy Pattern) ----------------
+class ActionHandler(ABC):
+    """Abstract base class for handling different calendar actions."""
+
+    def __init__(self, calendar: Calendar):
+        self.calendar = calendar
+
+    @abstractmethod
+    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
+        """Execute the action and return (reward, message)."""
+        pass
+
+    # Helper methods moved from environment
+    def _is_slot_available(self, slot: Slot) -> bool:
+        """Check if a slot is available (no event assigned)."""
+        for cal_slot in self.calendar.slots:
+            if cal_slot.start_time == slot.start_time and cal_slot.end_time == slot.end_time:
+                return cal_slot.event is None
+        return False
+
+    def _update_slot(self, slot: Slot):
+        """Update the calendar slot with the given slot."""
+        for cal_slot in self.calendar.slots:
+            if cal_slot.start_time == slot.start_time and cal_slot.end_time == slot.end_time:
+                cal_slot.event = slot.event
+                break
+
+    def _find_slot_by_event_id(self, event_id: str) -> Optional[Slot]:
+        """Find the slot containing the event with the given ID."""
+        for slot in self.calendar.slots:
+            if slot.event and slot.event.id == event_id:
+                return slot
+        return None
+
+    def _find_first_available_slot(self) -> Optional[Slot]:
+        """Find the first available slot (no event)."""
+        for slot in self.calendar.slots:
+            if slot.event is None:
+                return slot
+        return None
+
+
+class AddEventHandler(ActionHandler):
+    """Handles adding events to the calendar."""
+
+    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
+        slot_available = self._is_slot_available(expected.slot)
+        if performed.success and slot_available:
+            self._update_slot(performed.slot)
+            return 1.0, "Event added successfully"
+        return -1.0, "Failed to add event"
+
+
+class DeleteEventHandler(ActionHandler):
+    """Handles deleting events from the calendar."""
+
+    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
+        slot = self._find_slot_by_event_id(expected.event_id)
+        if slot and performed.success:
+            slot.event = None
+            return 1.0, "Event deleted successfully"
+        return -1.0, "Failed to delete event"
+
+
+class MoveEventHandler(ActionHandler):
+    """Handles moving events between slots."""
+
+    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
+        current_slot = self._find_slot_by_event_id(expected.event_id)
+        target_available = performed.slot is not None and self._is_slot_available(performed.slot)
+        if performed.success and current_slot and target_available:
+            performed.slot.event = current_slot.event
+            self._update_slot(performed.slot)
+            current_slot.event = None
+            return 1.0, "Event moved successfully"
+        return -1.0, "Failed to move event"
+
+
+class SearchSlotHandler(ActionHandler):
+    """Handles searching for available slots."""
+
+    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
+        available_slot = self._find_first_available_slot()
+        if performed.success and performed.slot and available_slot and performed.slot.start_time == available_slot.start_time:
+            return 1.0, "Slot found correctly"
+        return -1.0, "Incorrect slot found"
+
+
+# ---------------- COMMAND FACTORY ----------------
+class ActionHandlerFactory:
+    """Factory for creating action handlers."""
+
+    _handlers = {
+        "add_event": AddEventHandler,
+        "delete_event": DeleteEventHandler,
+        "move_event": MoveEventHandler,
+        "search_slot": SearchSlotHandler,
+    }
+
+    @staticmethod
+    def get_handler(action_type: str, calendar: Calendar) -> ActionHandler:
+        """Get the appropriate handler for the action type."""
+        handler_class = ActionHandlerFactory._handlers.get(action_type)
+        if not handler_class:
+            raise ValueError(f"Unknown action type: {action_type}")
+        return handler_class(calendar)
 
 
 class CalendarEnv(Environment):
     def __init__(self):
-        self.events: List[CalendarEvent] = []
         self.current_task_id = 0
         self.steps = 0
         self.max_steps = 10
+        self.calendar = self._build_daily_calendar()
 
     # ---------------- RESET ----------------
     def reset(self) -> MyCalendarObservation:
-        self.events = []
-        self.current_task_id = random.choice([0, 1])  # multiple tasks
+        self.calendar = self._build_daily_calendar()
+        self.current_task_id = 0
         self.steps = 0
 
         return MyCalendarObservation(
-            events=self.events,
             message=f"Environment reset (Task {self.current_task_id})",
             reward=0.0,
             done=False
@@ -105,121 +212,39 @@ class CalendarEnv(Environment):
     # ---------------- STEP ----------------
     def step(self, action: MyCalendarAction) -> MyCalendarObservation:
         self.steps += 1
-        reward = 0
-        message = ""
+        done = self.steps >= self.max_steps
 
-        # -------- ADD EVENT --------
-        if action.action_type == "add_event":
-            if action.event is None:
-                return MyCalendarObservation(
-                    events=self.events,
-                    message="No event provided ❌",
-                    reward=-1,
-                    done=False
-                )
+        expected = action.expected_action
+        performed = action.performed_action
 
-            conflict = self._has_conflict(action.event)
-
-            if conflict:
-                reward -= 2
-                message = "Conflict detected ❌"
-            else:
-                self.events.append(action.event)
-                reward += 1
-                message = "Event added ✅"
-
-        # -------- MOVE EVENT --------
-        elif action.action_type == "move_event":
-            found = False
-            for e in self.events:
-                if e.id == action.event_id:
-                    found = True
-
-                    if action.new_start is None or action.new_end is None:
-                        return MyCalendarObservation(
-                            events=self.events,
-                            message="Invalid move parameters ❌",
-                            reward=-1,
-                            done=False
-                        )
-
-                    e.start = action.new_start
-                    e.end = action.new_end
-                    reward += 1
-                    message = "Event moved 🔄"
-
-            if not found:
-                reward -= 1
-                message = "Event not found ❌"
-
-        # -------- DELETE EVENT --------
-        elif action.action_type == "delete_event":
-            before = len(self.events)
-            self.events = [e for e in self.events if e.id != action.event_id]
-
-            if len(self.events) < before:
-                reward += 0.5
-                message = "Event deleted 🗑️"
-            else:
-                reward -= 1
-                message = "Event not found ❌"
-
-        # -------- SMART PENALTY (no back-to-back meetings) --------
-        if len(self.events) >= 2:
-            self.events.sort(key=lambda x: x.start)
-
-            for i in range(len(self.events) - 1):
-                gap = (self.events[i + 1].start - self.events[i].end).total_seconds() / 60
-                if gap < 15:
-                    reward -= 0.5
-
-        # -------- TASK GRADING --------
-        task_reward, task_done = self._grade()
-        reward += task_reward
-
-        done = task_done or self.steps >= self.max_steps
+        # Get the appropriate handler and execute
+        try:
+            handler = ActionHandlerFactory.get_handler(expected.action_type, self.calendar)
+            reward, message = handler.execute(expected, performed)
+        except ValueError as e:
+            reward, message = -1.0, str(e)
 
         return MyCalendarObservation(
-            events=self.events,
             message=message,
             reward=reward,
             done=done
         )
 
-    # ---------------- CONFLICT CHECK ----------------
-    def _has_conflict(self, new_event: CalendarEvent) -> bool:
-        for e in self.events:
-            if not (new_event.end <= e.start or new_event.start >= e.end):
-                return True
-        return False
-
-    # ---------------- TASK GRADER ----------------
-    def _grade(self) -> Tuple[float, bool]:
-
-        # 🟢 Task 0: Add at least one valid event
-        if self.current_task_id == 0:
-            if len(self.events) > 0:
-                return 1.0, True
-
-        # 🟡 Task 1: Ensure no overlaps
-        if self.current_task_id == 1:
-            for i in range(len(self.events)):
-                for j in range(i + 1, len(self.events)):
-                    if not (
-                        self.events[i].end <= self.events[j].start or
-                        self.events[i].start >= self.events[j].end
-                    ):
-                        return -1.0, True
-            return 1.0, True
-
-        return 0.0, False
+    # ---------------- DAILY CALENDAR BUILDER ----------------
+    def _build_daily_calendar(self) -> Calendar:
+        start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        slots: List[Slot] = []
+        for hour in range(24):
+            slot_start = start_of_day + timedelta(hours=hour)
+            slot_end = slot_start + timedelta(hours=1)
+            slots.append(Slot(start_time=slot_start, end_time=slot_end))
+        return Calendar(slots=slots)
 
     # ---------------- STATE ----------------
     @property
     def state(self) -> MyCalendarState:
         return MyCalendarState(
-            episode_id="calendar-session",
+            episode_id=self.current_task_id,
             step_count=self.steps,
-            task_id=self.current_task_id,
-            steps_taken=self.steps
+            calendar=self.calendar
         )
