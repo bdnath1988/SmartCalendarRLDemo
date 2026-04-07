@@ -253,3 +253,4 @@ smart_calendar_agent/
     ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
     └── Dockerfile         # Container image definition
 ```
+#test file
