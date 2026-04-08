@@ -97,14 +97,20 @@ class ActionHandler(ABC):
         pass
 
     # Helper methods moved from environment
-    def _is_same_time(self, t1: datetime, t2: datetime) -> bool:
-        """Check if two times are within 60 seconds of each other.
-        
-        This handles datetime format variations (e.g., with/without microseconds).
-        """
+    def _parse_time(self, t: Any) -> datetime:
+        if isinstance(t, datetime):
+            return t
+        if isinstance(t, str):
+            return datetime.fromisoformat(t)
+        return t
+
+    def _is_same_time(self, t1: Any, t2: Any) -> bool:
+        """Check if two times are within 60 seconds of each other."""
         if t1 is None or t2 is None:
             return t1 == t2
-        return abs((t1 - t2).total_seconds()) < 60
+        dt1 = self._parse_time(t1)
+        dt2 = self._parse_time(t2)
+        return abs((dt1 - dt2).total_seconds()) < 60
 
     def _is_slot_available(self, slot: Slot) -> bool:
         """Check if a slot is available (no event assigned)."""
@@ -378,7 +384,7 @@ class CalendarEnv(Environment):
         for hour in range(24):
             slot_start = start_of_day + timedelta(hours=hour)
             slot_end = slot_start + timedelta(hours=1)
-            slots.append(Slot(start_time=slot_start, end_time=slot_end))
+            slots.append(Slot(start_time=slot_start.isoformat(), end_time=slot_end.isoformat()))
         return Calendar(slots=slots)
 
     def _count_scheduled_meetings(self) -> int:
@@ -390,7 +396,9 @@ class CalendarEnv(Environment):
         free_slots: List[str] = []
         for slot in self.calendar.slots:
             if slot.event is None:
-                free_slots.append(f"{slot.start_time.strftime('%H:%M')}-{slot.end_time.strftime('%H:%M')}")
+                st = datetime.fromisoformat(slot.start_time).strftime('%H:%M') if isinstance(slot.start_time, str) else slot.start_time.strftime('%H:%M')
+                en = datetime.fromisoformat(slot.end_time).strftime('%H:%M') if isinstance(slot.end_time, str) else slot.end_time.strftime('%H:%M')
+                free_slots.append(f"{st}-{en}")
         return free_slots
 
     def _assign_task(self) -> None:
@@ -432,7 +440,9 @@ class CalendarEnv(Environment):
 
             spacing_score = 0.0
             for left, right in zip(occupied, occupied[1:]):
-                gap = (right.start_time - left.end_time).total_seconds() / 3600.0
+                rt = datetime.fromisoformat(right.start_time) if isinstance(right.start_time, str) else right.start_time
+                lt = datetime.fromisoformat(left.end_time) if isinstance(left.end_time, str) else left.end_time
+                gap = (rt - lt).total_seconds() / 3600.0
                 if gap >= 1:
                     spacing_score += 0.2
                 else:
@@ -458,7 +468,9 @@ class CalendarEnv(Environment):
         occupied.sort(key=lambda s: s.start_time)
         gap_rewards = 0.0
         for left, right in zip(occupied, occupied[1:]):
-            hours_gap = (right.start_time - left.end_time).total_seconds() / 3600.0
+            rt = datetime.fromisoformat(right.start_time) if isinstance(right.start_time, str) else right.start_time
+            lt = datetime.fromisoformat(left.end_time) if isinstance(left.end_time, str) else left.end_time
+            hours_gap = (rt - lt).total_seconds() / 3600.0
             gap_rewards += 0.1 if hours_gap >= 1.0 else -0.1
 
         # Keep hard-task adjustment bounded.

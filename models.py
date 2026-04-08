@@ -21,8 +21,8 @@ class CalendarEvent(BaseModel):
 # 2. Slot
 class Slot(BaseModel):
     """Represents a time slot, optionally linked to a calendar event."""
-    start_time: datetime = Field(description="Start time (ISO 8601)")
-    end_time: datetime = Field(description="End time (ISO 8601)")
+    start_time: str = Field(description="Start time (ISO 8601)")
+    end_time: str = Field(description="End time (ISO 8601)")
     event: Optional[CalendarEvent] = Field(default=None, description="Optional event assigned to this slot")
 
 # 3. Expected Action
@@ -45,11 +45,26 @@ class Calendar(BaseModel):
     """Represents a calendar containing a list of available slots."""
     slots: List[Slot] = Field(description="List of slots")
 
-# 6. My Calendar Action
+from pydantic import model_validator
+import json
+
 class MyCalendarAction(Action):
     """Encapsulates a calendar action with expected and actual performed details."""
     expected_action: ExpectedAction = Field(description="Expected action to perform")
     performed_action: PerformedAction = Field(description="Action that was actually performed")
+
+    @model_validator(mode='before')
+    @classmethod
+    def parse_stringified_actions(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            for field in ["expected_action", "performed_action"]:
+                val = values.get(field)
+                if isinstance(val, str):
+                    try:
+                        values[field] = json.loads(val)
+                    except Exception:
+                        pass
+        return values
 
 
 # 3. Observation
