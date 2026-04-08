@@ -1,15 +1,13 @@
-# name: smart_calendar_agent
+name: Smart Calendar Environment
 
-tasks:
-  - name: add_event
-    description: Add event without conflict
+description: RL environment for scheduling meetings efficiently
 
-  - name: resolve_conflict
-    description: Fix overlapping events
+entry_point: smart_calendar_agent_environment:CalendarEnv
 
-  - name: optimize_schedule
-    description: Improve spacing between events
+observation_space:
+  type: dict
 
-reward:
-  success: 1
-  penalty: -1
+action_space:
+  type: dict
+
+reward_range: [0.0, 1.0]

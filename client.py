@@ -101,7 +101,12 @@ from typing import Dict
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 
-from models import MyCalendarAction, MyCalendarObservation, MyCalendarState
+from models import (
+    Calendar,
+    MyCalendarAction,
+    MyCalendarObservation,
+    MyCalendarState,
+)
 
 
 class SmartCalendarEnv(
@@ -112,32 +117,14 @@ class SmartCalendarEnv(
     """
 
     # -------- SEND ACTION --------
-    def _serialize_event(self, event):
-        if not event:
-            return None
-
-        return {
-            "id": event.id,
-            "title": event.title,
-            "start": event.start.isoformat(),
-            "end": event.end.isoformat(),
-        }
     def _step_payload(self, action: MyCalendarAction) -> Dict:
-        return {
-            "action_type": action.action_type,
-            # "event": action.event.model_dump() if action.event else None,
-            "event": self._serialize_event(action.event),
-            "event_id": action.event_id,
-            "new_start": action.new_start.isoformat() if action.new_start else None,
-            "new_end": action.new_end.isoformat() if action.new_end else None,
-        }
+        return action.model_dump(mode="json")
 
     # -------- PARSE RESPONSE --------
     def _parse_result(self, payload: Dict) -> StepResult[MyCalendarObservation]:
         obs_data = payload.get("observation", {})
 
         observation = MyCalendarObservation(
-            events=obs_data.get("events", []),
             message=obs_data.get("message", ""),
             reward=payload.get("reward", 0),
             done=payload.get("done", False),
@@ -154,6 +141,9 @@ class SmartCalendarEnv(
         return MyCalendarState(
             episode_id=payload.get("episode_id"),
             step_count=payload.get("step_count", 0),
-            task_id=payload.get("task_id", 0),
-            steps_taken=payload.get("steps_taken", payload.get("step_count", 0)),
+            calendar=Calendar.model_validate(payload.get("calendar", {"slots": []})),
+            task_objective=payload.get("task_objective", "Schedule 3 meetings efficiently"),
+            target_meetings=payload.get("target_meetings", 3),
+            scheduled_meetings=payload.get("scheduled_meetings", 0),
+            objective_progress=payload.get("objective_progress", 0.0),
         )

@@ -75,12 +75,13 @@ from openenv.core.env_server.interfaces import Environment
 from typing import Tuple, List, Optional
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
+import random
 import uuid
 
 try:
-    from ..models import MyCalendarAction, MyCalendarObservation,  MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction
+    from ..models import MyCalendarAction, MyCalendarObservation,  MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction, CalendarEvent
 except ImportError:
-    from models import MyCalendarAction, MyCalendarObservation, MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction
+    from models import MyCalendarAction, MyCalendarObservation, MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction, CalendarEvent
 
 
 # ---------------- ACTION HANDLERS (Strategy Pattern) ----------------
@@ -96,24 +97,33 @@ class ActionHandler(ABC):
         pass
 
     # Helper methods moved from environment
+    def _is_same_time(self, t1: datetime, t2: datetime) -> bool:
+        """Check if two times are within 60 seconds of each other.
+        
+        This handles datetime format variations (e.g., with/without microseconds).
+        """
+        if t1 is None or t2 is None:
+            return t1 == t2
+        return abs((t1 - t2).total_seconds()) < 60
+
     def _is_slot_available(self, slot: Slot) -> bool:
         """Check if a slot is available (no event assigned)."""
         for cal_slot in self.calendar.slots:
-            if cal_slot.start_time == slot.start_time and cal_slot.end_time == slot.end_time:
+            if self._is_same_time(cal_slot.start_time, slot.start_time) and self._is_same_time(cal_slot.end_time, slot.end_time):
                 return cal_slot.event is None
         return False
 
     def _update_slot(self, slot: Slot):
         """Update the calendar slot with the given slot."""
         for cal_slot in self.calendar.slots:
-            if cal_slot.start_time == slot.start_time and cal_slot.end_time == slot.end_time:
+            if self._is_same_time(cal_slot.start_time, slot.start_time) and self._is_same_time(cal_slot.end_time, slot.end_time):
                 cal_slot.event = slot.event
                 break
 
     def _find_slot_by_event_id(self, event_id: str) -> Optional[Slot]:
         """Find the slot containing the event with the given ID."""
         for slot in self.calendar.slots:
-            if slot.event and slot.event.id == event_id:
+            if slot.event and slot.event.event_id == event_id:
                 return slot
         return None
 
@@ -130,10 +140,33 @@ class AddEventHandler(ActionHandler):
 
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
         slot_available = self._is_slot_available(expected.slot)
-        if performed.success and slot_available:
-            self._update_slot(performed.slot)
+        
+        # Full success: both slot available and operation succeeded
+        if slot_available and performed.success:
+            event_slot = performed.slot or expected.slot
+            if event_slot and event_slot.event is None:
+                event_id = performed.event_id or expected.event_id or "event"
+                title = None
+                if performed.slot and performed.slot.event and performed.slot.event.title:
+                    title = performed.slot.event.title
+                elif expected.slot and expected.slot.event and expected.slot.event.title:
+                    title = expected.slot.event.title
+                else:
+                    title = expected.event_id or performed.event_id or "event"
+                event_slot.event = CalendarEvent(event_id=event_id, title=title)
+            self._update_slot(event_slot)
             return 1.0, "Event added successfully"
-        return -1.0, "Failed to add event"
+        
+        # Partial credit: correct slot identified but operation failed
+        if slot_available and not performed.success:
+            return 0.3, "Event not added (slot identified but execution failed)"
+        
+        # Wrong logic: operation succeeded but slot not available
+        if not slot_available and performed.success:
+            return -0.5, "Event not added (wrong slot selected)"
+        
+        # Complete failure: both slot unavailable and operation failed
+        return -1.0, "Failed to add event (slot unavailable)"
 
 
 class DeleteEventHandler(ActionHandler):
@@ -141,10 +174,22 @@ class DeleteEventHandler(ActionHandler):
 
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
         slot = self._find_slot_by_event_id(expected.event_id)
+        
+        # Full success: event found and deleted successfully
         if slot and performed.success:
             slot.event = None
             return 1.0, "Event deleted successfully"
-        return -1.0, "Failed to delete event"
+        
+        # Partial credit: event found but deletion failed
+        if slot and not performed.success:
+            return 0.3, "Event found but deletion failed"
+        
+        # Wrong logic: deletion succeeded but event not found
+        if not slot and performed.success:
+            return -0.5, "Event deletion succeeded but event not found"
+        
+        # Complete failure: event not found and deletion failed
+        return -1.0, "Failed to delete event (not found)"
 
 
 class MoveEventHandler(ActionHandler):
@@ -153,11 +198,27 @@ class MoveEventHandler(ActionHandler):
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
         current_slot = self._find_slot_by_event_id(expected.event_id)
         target_available = performed.slot is not None and self._is_slot_available(performed.slot)
+        
+        # Full success: current slot found, target available, and move successful
         if performed.success and current_slot and target_available:
             performed.slot.event = current_slot.event
             self._update_slot(performed.slot)
             current_slot.event = None
             return 1.0, "Event moved successfully"
+        
+        # Partial credit: current slot found but move failed
+        if not performed.success and current_slot:
+            return 0.3, "Current event located but move failed"
+        
+        # Partial credit: current slot and target valid but move failed
+        if not performed.success and current_slot and target_available:
+            return 0.4, "Event and target slot valid but move execution failed"
+        
+        # Wrong logic: move succeeded but prerequisites not met
+        if performed.success and (not current_slot or not target_available):
+            return -0.5, "Move succeeded but event or target slot invalid"
+        
+        # Complete failure
         return -1.0, "Failed to move event"
 
 
@@ -166,9 +227,25 @@ class SearchSlotHandler(ActionHandler):
 
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
         available_slot = self._find_first_available_slot()
-        if performed.success and performed.slot and available_slot and performed.slot.start_time == available_slot.start_time:
+        
+        # Full success: found available slot and returned correct one
+        if performed.success and performed.slot and available_slot and self._is_same_time(performed.slot.start_time, available_slot.start_time):
             return 1.0, "Slot found correctly"
-        return -1.0, "Incorrect slot found"
+        
+        # Partial credit: search succeeded but returned wrong slot
+        if performed.success and performed.slot and available_slot and not self._is_same_time(performed.slot.start_time, available_slot.start_time):
+            return 0.2, "Search succeeded but returned wrong slot"
+        
+        # Partial credit: search succeeded but returned something when slots available
+        if performed.success and performed.slot is None and available_slot:
+            return 0.1, "No slot returned but slots are available"
+        
+        # Wrong logic: search succeeded but no available slots exist (shouldn't happen)
+        if performed.success and not available_slot:
+            return -0.5, "Slot search succeeded but no slots are available"
+        
+        # Complete failure: search failed
+        return -1.0, "Search failed"
 
 
 # ---------------- COMMAND FACTORY ----------------
@@ -213,6 +290,9 @@ class CalendarEnv(Environment):
         self.current_task_id = str(uuid.uuid4())
         self.steps = 0
         self.max_steps = 10
+        self.task_type = "medium"
+        self.task_objective = "Schedule 3 meetings efficiently"
+        self.target_meetings = 3
         self.calendar = self._build_daily_calendar()
 
     # ---------------- RESET ----------------
@@ -225,9 +305,10 @@ class CalendarEnv(Environment):
         self.calendar = self._build_daily_calendar()
         self.current_task_id = str(uuid.uuid4())
         self.steps = 0
+        self._assign_task()
 
         return MyCalendarObservation(
-            message=f"Environment reset (Task {self.current_task_id})",
+            message=f"Environment reset (Task {self.current_task_id}) | Objective: {self.task_objective}",
             reward=0.0,
             done=False
         )
@@ -246,8 +327,6 @@ class CalendarEnv(Environment):
             A MyCalendarObservation with reward, done status, and message.
         """
         self.steps += 1
-        self.current_task_id = str(uuid.uuid4())
-        done = self.steps >= self.max_steps
 
         expected = action.expected_action
         performed = action.performed_action
@@ -255,14 +334,34 @@ class CalendarEnv(Environment):
         # Get the appropriate handler and execute
         try:
             handler = ActionHandlerFactory.get_handler(expected.command, self.calendar)
-            reward, message = handler.execute(expected, performed)
+            base_reward, message = handler.execute(expected, performed)
         except ValueError as e:
-            reward, message = -1.0, str(e)
+            base_reward, message = -1.0, str(e)
+
+        # Reward shaping: combine action correctness and objective progress.
+        scheduled = self._count_scheduled_meetings()
+        progress_reward = min(1.0, (scheduled / self.target_meetings)) if self.target_meetings > 0 else 0.0
+        task_bonus = self._task_reward_adjustment()
+        reward = base_reward + 0.5 * progress_reward + task_bonus
+
+        # Debug prints
+        print("Expected:", expected)
+        print("Performed:", performed)
+        print("Base Reward:", base_reward)
+        print("Progress Reward:", progress_reward)
+        print("Task Bonus:", task_bonus)
+        print("Reward:", reward)
+        score = self.compute_score()
+        print("Score:", score)
+
+        # Episode is done when max steps is reached.
+        done = self.steps >= self.max_steps
 
         return MyCalendarObservation(
             message=message,
             reward=reward,
-            done=done
+            done=done,
+            metadata={"score": score}
         )
 
     # ---------------- DAILY CALENDAR BUILDER ----------------
@@ -276,12 +375,90 @@ class CalendarEnv(Environment):
             slots.append(Slot(start_time=slot_start, end_time=slot_end))
         return Calendar(slots=slots)
 
+    def _count_scheduled_meetings(self) -> int:
+        """Count how many slots currently contain an event."""
+        return sum(1 for slot in self.calendar.slots if slot.event is not None)
+
+    def _assign_task(self) -> None:
+        """Assign one of the explicit evaluation tasks for this episode."""
+        self.task_type = random.choice(["easy", "medium", "hard"])
+
+        if self.task_type == "easy":
+            self.target_meetings = 1
+            self.task_objective = "Task Easy: Schedule exactly 1 meeting"
+
+        elif self.task_type == "medium":
+            self.target_meetings = 3
+            self.task_objective = "Task Medium: Schedule 3 meetings without overlap"
+
+        else:
+            self.target_meetings = 5
+            self.task_objective = "Task Hard: Schedule 5 meetings with at least 1-hour gaps"
+
+    def compute_score(self) -> float:
+        """Compute deterministic task score in [0, 1] for current episode state."""
+        scheduled = self._count_scheduled_meetings()
+
+        if self.task_type == "easy":
+            # Binary success.
+            return 1.0 if scheduled >= 1 else 0.0
+
+        elif self.task_type == "medium":
+            # Partial score based on completion.
+            return min(1.0, scheduled / 3)
+
+        elif self.task_type == "hard":
+            completion = min(1.0, scheduled / 5)
+
+            occupied = [slot for slot in self.calendar.slots if slot.event is not None]
+            occupied.sort(key=lambda s: s.start_time)
+
+            spacing_score = 0.0
+            for left, right in zip(occupied, occupied[1:]):
+                gap = (right.start_time - left.end_time).total_seconds() / 3600.0
+                if gap >= 1:
+                    spacing_score += 0.2
+                else:
+                    spacing_score -= 0.1
+
+            spacing_score = max(0.0, min(1.0, spacing_score))
+            return min(1.0, 0.6 * completion + 0.4 * spacing_score)
+
+        return 0.0
+
+    def _task_reward_adjustment(self) -> float:
+        """Return task-specific reward adjustment without changing core handlers."""
+        if self.task_type == "easy":
+            return 0.0
+        if self.task_type == "medium":
+            return 0.0
+
+        # Hard task bonus: prefer non-consecutive meetings (at least 2-hour gap).
+        occupied = [slot for slot in self.calendar.slots if slot.event is not None]
+        if len(occupied) < 2:
+            return 0.0
+
+        occupied.sort(key=lambda s: s.start_time)
+        gap_rewards = 0.0
+        for left, right in zip(occupied, occupied[1:]):
+            hours_gap = (right.start_time - left.end_time).total_seconds() / 3600.0
+            gap_rewards += 0.1 if hours_gap >= 1.0 else -0.1
+
+        # Keep hard-task adjustment bounded.
+        return max(-0.3, min(0.3, gap_rewards))
+
     # ---------------- STATE ----------------
     @property
     def state(self) -> MyCalendarState:
         """Return the current environment state as a MyCalendarState object."""
+        scheduled = self._count_scheduled_meetings()
+        progress = min(1.0, scheduled / self.target_meetings) if self.target_meetings > 0 else 0.0
         return MyCalendarState(
             episode_id=self.current_task_id,
             step_count=self.steps,
-            calendar=self.calendar
+            calendar=self.calendar,
+            task_objective=self.task_objective,
+            target_meetings=self.target_meetings,
+            scheduled_meetings=scheduled,
+            objective_progress=progress,
         )

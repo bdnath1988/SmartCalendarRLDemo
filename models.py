@@ -62,3 +62,7 @@ class MyCalendarObservation(Observation):
 class MyCalendarState(State):
     """Tracks the internal state of the calendar environment."""
     calendar: Calendar = Field(description="Current calendar state")
+    task_objective: str = Field(default="Schedule 3 meetings efficiently", description="Current task objective for the episode")
+    target_meetings: int = Field(default=3, description="Target number of meetings for objective completion")
+    scheduled_meetings: int = Field(default=0, description="Number of meetings currently scheduled")
+    objective_progress: float = Field(default=0.0, description="Progress toward objective in range [0, 1]")

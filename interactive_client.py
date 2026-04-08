@@ -1,20 +1,19 @@
 from datetime import datetime
 from client import SmartCalendarEnv
-from models import MyCalendarAction, CalendarEvent
+from models import MyCalendarAction, ExpectedAction, PerformedAction, Slot
 
 
 def parse_time(t):
-    return datetime.fromisoformat(f"2026-04-07T{t}:00")
+    today = datetime.now().date()
+    return datetime.fromisoformat(f"{today.isoformat()}T{t}:00")
 
 
-def print_events(events):
-    if not events:
-        print("📭 No events scheduled")
-        return
+def build_slot(start, end):
+    return Slot(start_time=parse_time(start), end_time=parse_time(end))
 
-    print("\n📅 Current Calendar:")
-    for e in events:
-        print(f"  🕒 {e.start.time()} - {e.end.time()} | {e.title} (id={e.id})")
+
+def print_result(res):
+    print(f"➡️ {res.observation.message} | Reward: {res.reward} | Done: {res.done}")
 
 
 with SmartCalendarEnv(base_url="http://localhost:8000").sync() as env:
@@ -50,20 +49,26 @@ Commands:
         elif cmd[0] == "add":
             try:
                 _, id, title, start, end = cmd
+                slot = Slot(
+                    start_time=parse_time(start),
+                    end_time=parse_time(end),
+                    event=None,
+                )
 
                 action = MyCalendarAction(
-                    action_type="add_event",
-                    event=CalendarEvent(
-                        id=id,
-                        title=title,
-                        start=parse_time(start),
-                        end=parse_time(end),
+                    expected_action=ExpectedAction(
+                        command="add_event",
+                        slot=slot,
+                        event_id=id,
+                    ),
+                    performed_action=PerformedAction(
+                        success=True,
+                        slot=slot,
                     ),
                 )
 
                 res = env.step(action)
-                print(f"➡️ {res.observation.message} | Reward: {res.reward}")
-                print_events(res.observation.events)
+                print_result(res)
 
             except:
                 print("❌ Usage: add <id> <title> <start> <end>")
@@ -73,15 +78,19 @@ Commands:
                 _, id, start, end = cmd
 
                 action = MyCalendarAction(
-                    action_type="move_event",
-                    event_id=id,
-                    new_start=parse_time(start),
-                    new_end=parse_time(end),
+                    expected_action=ExpectedAction(
+                        command="move_event",
+                        event_id=id,
+                    ),
+                    performed_action=PerformedAction(
+                        success=True,
+                        event_id=id,
+                        slot=build_slot(start, end),
+                    ),
                 )
 
                 res = env.step(action)
-                print(f"➡️ {res.observation.message} | Reward: {res.reward}")
-                print_events(res.observation.events)
+                print_result(res)
 
             except:
                 print("❌ Usage: move <id> <start> <end>")
@@ -91,20 +100,27 @@ Commands:
                 _, id = cmd
 
                 action = MyCalendarAction(
-                    action_type="delete_event",
-                    event_id=id,
+                    expected_action=ExpectedAction(
+                        command="delete_event",
+                        event_id=id,
+                    ),
+                    performed_action=PerformedAction(
+                        success=True,
+                        event_id=id,
+                    ),
                 )
 
                 res = env.step(action)
-                print(f"➡️ {res.observation.message} | Reward: {res.reward}")
-                print_events(res.observation.events)
+                print_result(res)
 
             except:
                 print("❌ Usage: delete <id>")
 
         elif cmd[0] == "state":
             state = env.state()
-            print(f"📊 Steps: {state.step_count}, Task: {state.task_id}")
+            print(f"📊 Steps: {state.step_count}, Episode: {state.episode_id}")
+            print(f"🎯 Objective: {state.task_objective}")
+            print(f"📌 Meetings: {state.scheduled_meetings}/{state.target_meetings} | Progress: {state.objective_progress:.2f}")
 
         else:
             print("❌ Unknown command (type 'help')")
