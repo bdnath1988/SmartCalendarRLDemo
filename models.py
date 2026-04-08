@@ -8,7 +8,7 @@
 
 from openenv.core.env_server.types import Action, Observation, State
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
 
 
@@ -56,6 +56,7 @@ class MyCalendarAction(Action):
 class MyCalendarObservation(Observation):
     """Represents observations returned from the calendar environment."""
     message: str = Field(description="Observation message")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional observation metadata")
 
 
 # 4. Internal State
@@ -63,6 +64,10 @@ class MyCalendarState(State):
     """Tracks the internal state of the calendar environment."""
     calendar: Calendar = Field(description="Current calendar state")
     task_objective: str = Field(default="Schedule 3 meetings efficiently", description="Current task objective for the episode")
+    task_goal: str = Field(default="schedule 3 meetings", description="Short task goal string for prompting")
+    events: List[str] = Field(default_factory=list, description="List of scheduled event IDs")
+    free_slots: List[str] = Field(default_factory=list, description="List of currently free slot labels")
     target_meetings: int = Field(default=3, description="Target number of meetings for objective completion")
     scheduled_meetings: int = Field(default=0, description="Number of meetings currently scheduled")
     objective_progress: float = Field(default=0.0, description="Progress toward objective in range [0, 1]")
+    failed_steps: int = Field(default=0, description="Number of failed steps in the current episode")

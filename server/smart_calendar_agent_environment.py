@@ -139,7 +139,14 @@ class AddEventHandler(ActionHandler):
     """Handles adding events to the calendar."""
 
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
+        # Duplicate event IDs should be explicitly penalized.
+        if expected.event_id and self._find_slot_by_event_id(expected.event_id):
+            return -1.0, "Duplicate event id"
+
         slot_available = self._is_slot_available(expected.slot)
+
+        if not slot_available:
+            return -1.0, "Time slot already occupied"
         
         # Full success: both slot available and operation succeeded
         if slot_available and performed.success:
@@ -160,13 +167,6 @@ class AddEventHandler(ActionHandler):
         # Partial credit: correct slot identified but operation failed
         if slot_available and not performed.success:
             return 0.3, "Event not added (slot identified but execution failed)"
-        
-        # Wrong logic: operation succeeded but slot not available
-        if not slot_available and performed.success:
-            return -0.5, "Event not added (wrong slot selected)"
-        
-        # Complete failure: both slot unavailable and operation failed
-        return -1.0, "Failed to add event (slot unavailable)"
 
 
 class DeleteEventHandler(ActionHandler):
@@ -289,11 +289,14 @@ class CalendarEnv(Environment):
     def __init__(self):
         self.current_task_id = str(uuid.uuid4())
         self.steps = 0
+        self.failed_steps = 0
         self.max_steps = 10
         self.task_type = "medium"
         self.task_objective = "Schedule 3 meetings efficiently"
+        self.task_goal = "schedule 3 meetings"
         self.target_meetings = 3
         self.calendar = self._build_daily_calendar()
+        self.previous_action_signature = ""
 
     # ---------------- RESET ----------------
     def reset(self) -> MyCalendarObservation:
@@ -305,6 +308,8 @@ class CalendarEnv(Environment):
         self.calendar = self._build_daily_calendar()
         self.current_task_id = str(uuid.uuid4())
         self.steps = 0
+        self.failed_steps = 0
+        self.previous_action_signature = ""
         self._assign_task()
 
         return MyCalendarObservation(
@@ -328,6 +333,8 @@ class CalendarEnv(Environment):
         """
         self.steps += 1
 
+        action_signature = action.model_dump_json()
+
         expected = action.expected_action
         performed = action.performed_action
 
@@ -344,18 +351,17 @@ class CalendarEnv(Environment):
         task_bonus = self._task_reward_adjustment()
         reward = base_reward + 0.5 * progress_reward + task_bonus
 
-        # Debug prints
-        print("Expected:", expected)
-        print("Performed:", performed)
-        print("Base Reward:", base_reward)
-        print("Progress Reward:", progress_reward)
-        print("Task Bonus:", task_bonus)
-        print("Reward:", reward)
-        score = self.compute_score()
-        print("Score:", score)
+        if action_signature == self.previous_action_signature:
+            reward -= 0.5
 
-        # Episode is done when max steps is reached.
-        done = self.steps >= self.max_steps
+        if reward < 0:
+            self.failed_steps += 1
+
+        score = self.compute_score()
+        self.previous_action_signature = action_signature
+
+        # Episode ends when max steps are reached, the goal is achieved, or too many failures occur.
+        done = self.steps >= self.max_steps or scheduled >= self.target_meetings or self.failed_steps >= 3
 
         return MyCalendarObservation(
             message=message,
@@ -379,6 +385,14 @@ class CalendarEnv(Environment):
         """Count how many slots currently contain an event."""
         return sum(1 for slot in self.calendar.slots if slot.event is not None)
 
+    def _build_free_slot_labels(self) -> List[str]:
+        """Build compact labels for free slots to help prompting."""
+        free_slots: List[str] = []
+        for slot in self.calendar.slots:
+            if slot.event is None:
+                free_slots.append(f"{slot.start_time.strftime('%H:%M')}-{slot.end_time.strftime('%H:%M')}")
+        return free_slots
+
     def _assign_task(self) -> None:
         """Assign one of the explicit evaluation tasks for this episode."""
         self.task_type = random.choice(["easy", "medium", "hard"])
@@ -386,14 +400,17 @@ class CalendarEnv(Environment):
         if self.task_type == "easy":
             self.target_meetings = 1
             self.task_objective = "Task Easy: Schedule exactly 1 meeting"
+            self.task_goal = "schedule 1 meeting"
 
         elif self.task_type == "medium":
             self.target_meetings = 3
             self.task_objective = "Task Medium: Schedule 3 meetings without overlap"
+            self.task_goal = "schedule 3 meetings"
 
         else:
             self.target_meetings = 5
             self.task_objective = "Task Hard: Schedule 5 meetings with at least 1-hour gaps"
+            self.task_goal = "schedule 5 meetings with spacing"
 
     def compute_score(self) -> float:
         """Compute deterministic task score in [0, 1] for current episode state."""
@@ -453,12 +470,17 @@ class CalendarEnv(Environment):
         """Return the current environment state as a MyCalendarState object."""
         scheduled = self._count_scheduled_meetings()
         progress = min(1.0, scheduled / self.target_meetings) if self.target_meetings > 0 else 0.0
+        events = [slot.event.event_id for slot in self.calendar.slots if slot.event is not None and slot.event.event_id]
         return MyCalendarState(
             episode_id=self.current_task_id,
             step_count=self.steps,
             calendar=self.calendar,
             task_objective=self.task_objective,
+            task_goal=self.task_goal,
+            events=events,
+            free_slots=self._build_free_slot_labels(),
             target_meetings=self.target_meetings,
             scheduled_meetings=scheduled,
             objective_progress=progress,
+            failed_steps=self.failed_steps,
         )

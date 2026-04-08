@@ -128,6 +128,7 @@ class SmartCalendarEnv(
             message=obs_data.get("message", ""),
             reward=payload.get("reward", 0),
             done=payload.get("done", False),
+            metadata=obs_data.get("metadata", {})
         )
 
         return StepResult(
@@ -138,12 +139,19 @@ class SmartCalendarEnv(
 
     # -------- PARSE STATE --------
     def _parse_state(self, payload: Dict) -> MyCalendarState:
+        calendar = Calendar.model_validate(payload.get("calendar", {"slots": []}))
+        events = payload.get("events", [])
+        free_slots = payload.get("free_slots", [])
         return MyCalendarState(
             episode_id=payload.get("episode_id"),
             step_count=payload.get("step_count", 0),
-            calendar=Calendar.model_validate(payload.get("calendar", {"slots": []})),
+            calendar=calendar,
             task_objective=payload.get("task_objective", "Schedule 3 meetings efficiently"),
+            task_goal=payload.get("task_goal", "schedule 3 meetings"),
+            events=events,
+            free_slots=free_slots,
             target_meetings=payload.get("target_meetings", 3),
             scheduled_meetings=payload.get("scheduled_meetings", 0),
             objective_progress=payload.get("objective_progress", 0.0),
+            failed_steps=payload.get("failed_steps", 0),
         )

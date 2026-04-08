@@ -10,4 +10,4 @@ observation_space:
 action_space:
   type: dict
 
-reward_range: [0.0, 1.0]
+reward_range: [-1.0, 1.5]
