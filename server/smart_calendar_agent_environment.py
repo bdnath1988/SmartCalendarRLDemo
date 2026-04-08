@@ -173,7 +173,7 @@ class SearchSlotHandler(ActionHandler):
 
 # ---------------- COMMAND FACTORY ----------------
 class ActionHandlerFactory:
-    """Factory for creating action handlers."""
+    """Factory for creating action handlers based on action type."""
 
     _handlers = {
         "add_event": AddEventHandler,
@@ -184,7 +184,18 @@ class ActionHandlerFactory:
 
     @staticmethod
     def get_handler(action_type: str, calendar: Calendar) -> ActionHandler:
-        """Get the appropriate handler for the action type."""
+        """Return the handler instance for the requested action type.
+
+        Args:
+            action_type: The command name for the calendar action.
+            calendar: The current calendar state to operate on.
+
+        Returns:
+            An ActionHandler instance for the requested action.
+
+        Raises:
+            ValueError: If the action type is not recognized.
+        """
         handler_class = ActionHandlerFactory._handlers.get(action_type)
         if not handler_class:
             raise ValueError(f"Unknown action type: {action_type}")
@@ -192,6 +203,12 @@ class ActionHandlerFactory:
 
 
 class CalendarEnv(Environment):
+    """A simple smart calendar environment for OpenEnv-style agents.
+
+    The environment maintains a daily calendar, tracks episode and step state,
+    and routes agent actions through a strategy-based action handler.
+    """
+
     def __init__(self):
         self.current_task_id = str(uuid.uuid4())
         self.steps = 0
@@ -200,6 +217,11 @@ class CalendarEnv(Environment):
 
     # ---------------- RESET ----------------
     def reset(self) -> MyCalendarObservation:
+        """Reset the environment to a fresh daily calendar and new task ID.
+
+        Returns:
+            A MyCalendarObservation indicating the reset state.
+        """
         self.calendar = self._build_daily_calendar()
         self.current_task_id = str(uuid.uuid4())
         self.steps = 0
@@ -212,6 +234,17 @@ class CalendarEnv(Environment):
 
     # ---------------- STEP ----------------
     def step(self, action: MyCalendarAction) -> MyCalendarObservation:
+        """Advance the environment by applying the agent's calendar action.
+
+        The action is routed through the appropriate handler based on the
+        expected command, and the calendar state is updated in place.
+
+        Args:
+            action: The incoming MyCalendarAction from the agent.
+
+        Returns:
+            A MyCalendarObservation with reward, done status, and message.
+        """
         self.steps += 1
         self.current_task_id = str(uuid.uuid4())
         done = self.steps >= self.max_steps
@@ -234,6 +267,7 @@ class CalendarEnv(Environment):
 
     # ---------------- DAILY CALENDAR BUILDER ----------------
     def _build_daily_calendar(self) -> Calendar:
+        """Create an empty calendar with 24 hourly slots for the current day."""
         start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         slots: List[Slot] = []
         for hour in range(24):
@@ -245,6 +279,7 @@ class CalendarEnv(Environment):
     # ---------------- STATE ----------------
     @property
     def state(self) -> MyCalendarState:
+        """Return the current environment state as a MyCalendarState object."""
         return MyCalendarState(
             episode_id=self.current_task_id,
             step_count=self.steps,
