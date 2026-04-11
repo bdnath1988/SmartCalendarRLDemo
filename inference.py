@@ -7,7 +7,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
-from importlib_metadata import metadata
+import random
 from openai import OpenAI
 
 from client import SmartCalendarEnv
@@ -47,12 +47,26 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]):
+def log_end(success: bool, steps: int, score: float, rewards: List[float], task_id: str, trajectory: list):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    status_str = "SUCCESS" if success else "FAILED"
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        f"[END] status={status_str} success={str(success).lower()} steps={steps} score={score:.3f} total_reward={sum(rewards):.2f}",
         flush=True,
     )
+    
+    # Standardized specific output required by validator
+    standard_output = {
+        "task_id": task_id,
+        "success": success,
+        "score": score,
+        "steps": steps,
+        "trajectory": trajectory
+    }
+    print("\n" + "="*50)
+    print("--- STANDARDIZED EPISODE OUTPUT ---")
+    print(json.dumps(standard_output, indent=2))
+    print("="*50, flush=True)
 
 # ================= HELPERS =================
 def parse_time(t: str) -> datetime:
@@ -160,16 +174,34 @@ def is_duplicate_action(action_json: dict, previous_action_json: Optional[dict])
 
 # ================= MAIN =================
 async def main():
+    random.seed(42)  # Seed management for reproducibility
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
     successful_events = 0
     previous_action_json: Optional[dict] = None
+    trajectory: List[dict] = []
+    task_id = TASK_NAME
 
     log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
 
-    env = await SmartCalendarEnv.from_docker_image(IMAGE_NAME)
+    try:
+        print(f"[DEBUG] Attempting to start environment from image: {IMAGE_NAME}", flush=True)
+        env = await SmartCalendarEnv.from_docker_image(IMAGE_NAME)
+        print(f"[DEBUG] Environment started successfully.", flush=True)
+    except Exception as e:
+        print(f"\n[CRITICAL ERROR] Failed to initialize Docker environment.", flush=True)
+        print(f"Details: {e}", flush=True)
+        print("-" * 30)
+        print("POSSIBLE FIXES:")
+        print(f"1. Ensure docker is running.")
+        print(f"2. Run 'docker build -t {IMAGE_NAME} .' to build the image.")
+        print(f"3. Check if port 8000 is already in use.")
+        print("-" * 30, flush=True)
+        log_end(False, 0, 0.0, [], task_id, [])
+        return
+
 
     try:
         result = await env.reset()
@@ -188,13 +220,13 @@ async def main():
 
             try:
                 slot = Slot(
-                    start_time=parse_time(action_json["start_time"]),
-                    end_time=parse_time(action_json["end_time"]),
+                    start_time=parse_time(action_json["start_time"]).isoformat(),
+                    end_time=parse_time(action_json["end_time"]).isoformat(),
                 )
             except:
                 slot = Slot(
-                    start_time=parse_time("09:00"),
-                    end_time=parse_time("10:00"),
+                    start_time=parse_time("09:00").isoformat(),
+                    end_time=parse_time("10:00").isoformat(),
                 )
 
             action = MyCalendarAction(
@@ -220,6 +252,7 @@ async def main():
 
                 current_state = await env.state()
                 score = current_state.objective_progress
+                task_id = getattr(current_state, "episode_id", task_id)
                 
                 if reward >= 1.0:
                     successful_events += 1
@@ -227,6 +260,14 @@ async def main():
                 reward = 0.0
                 done = True
                 error = str(e)
+
+            trajectory.append({
+                "step": step,
+                "action": action_json,
+                "reward": reward,
+                "done": done,
+                "error": error
+            })
 
             log_step(step, json.dumps(action_json), reward, done, error)
 
@@ -251,7 +292,7 @@ async def main():
         except Exception as e:
             print(f"[DEBUG] env.close error: {e}", flush=True)
 
-        log_end(success, steps_taken, score, rewards)
+        log_end(success, steps_taken, score, rewards, task_id, trajectory)
 
 
 # ================= ENTRY =================

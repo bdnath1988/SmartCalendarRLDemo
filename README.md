@@ -25,24 +25,45 @@ The environment defines 3 standard tasks, assigned dynamically by difficulty (gr
 2. **Medium:** Schedule 3 meetings efficiently without overlapping any existing events. (Target: 3)
 3. **Hard:** Schedule 5 meetings while mandating a minimum of 1-hour gaps between all meetings. (Target: 5)
 
-## Action & Observation Spaces
+## Formal Specifications
 
-### Action Space (MyCalendarAction)
-Actions are structured Pydantic models with the following key fields under `ExpectedAction`:
-- `command` (Literal): `add_event`, `move_event`, `delete_event`, `search_slot`.
-- `slot` (Slot, Optional): Includes `start_time` and `end_time`.
-- `event_id` (str, Optional): Unique identifier for the event.
+### 1. State Space ($\mathcal{S}$)
+The true environment state $\mathcal{S}$ is formally defined as:
+$s_t = \langle \mathcal{C}, M_{target}, M_{current}, \tau, \Phi \rangle$
+- $\mathcal{C}$: The calendar array containing 24 chronological slots, each $c_i \in \{0, 1\}$.
+- $M_{target}$: Target number of meetings required by the task $T \in \{1, 3, 5\}$.
+- $M_{current}$: Meetings currently successfully scheduled.
+- $\tau$: Timestep count $\tau \in [0, 10]$.
+- $\Phi$: Task-specific rules (e.g., minimum 1-hour spacing $\phi_{gap} \ge 1$).
 
-### Observation Space (MyCalendarObservation)
-The environment returns structured feedback tracking real-time status:
-- `message` (str): Textual feedback representing success, failure, or warnings.
-- `reward` (float): Current action's scalar reward.
-- `done` (bool): Termination condition switch.
-- `metadata` (dict): Additional internal structures (such as score mapping).
+### 2. Action Space ($\mathcal{A}$)
+The agent selects an action $a_t \in \mathcal{A}$ parameterized as a tuple:
+$a_t = \langle C, e, t_{start}, t_{end} \rangle$
+Where the command $C \in \{add\_event, move\_event, delete\_event, search\_slot\}$, $e$ is an event ID, and $t$ represents timestamps.
 
-## Scoring & Rewards
-- **Rewards**: Dynamic reward shaping based on trajectory. Finding free slots grants base rewards (e.g., `+0.2`), successfully adding a valid meeting yields proportional goal progress bonuses (e.g., `+1.0` to `+1.5`), and attempting to force a meeting into an occupied slot triggers an immediate stiff penalty (`-1.0`).
-- **Score (0.0 to 1.0)**: Final grading metric based directly on task completion progress and conditional efficiency (like spacing gaps for Hard mode).
+### 3. Reward Function ($\mathcal{R}$)
+$r_t = \mathcal{R}(s_t, a_t) \rightarrow \mathbb{R}$
+- Valid operation ($C = add\_event$ into empty $c_i$): $+1.0$ (scaled with objective bonus)
+- Invalid operation (Collision/Constraints): $-1.0$
+- Redundant operation: $-0.5$
+
+---
+
+## 🛑 Reward Leakage & Privileged Information
+To maintain evaluation integrity and prevent **Reward Leakage**, there is a strict separation between what the Agent observes and what the Grader knows.
+
+**Agent Observables (Passed in prompt):**
+- $M_{target}$ (Objective count) and current $M_{current}$ (Count of scheduled meetings).
+- A textual list of currently `free_slots` (e.g., "09:00-10:00").
+- IDs of existing scheduled `events`.
+- The explicit task goal and objective strings.
+- **Filtering:** The agent **never** sees the raw calendar matrix or the internal timestamp strings of occupied slots unless it has successfully scheduled them itself.
+
+**Privileged Grader Information (Hidden from Agent):**
+The external `Grader` class has direct access to the raw Python `Calendar` object matrix and the `task_definitions.py` metrics. It independently computes:
+- **Exact Overlap Matrix:** Checks for sub-minute overlaps that might be obscured in the prompt's hourly labels.
+- **Spacing Bound Violations:** Mathematically verifies that gaps (e.g., 1.0 hour) are strictly maintained.
+- **Deterministic Score:** Computes $\Sigma \in [0,1]$ which is completely decoupled from the stepwise RL reward $r_t$. The agent does not see its current "Score" during the episode, only the "Reward" for the immediate action.
 
 ## Setup instructions
 
