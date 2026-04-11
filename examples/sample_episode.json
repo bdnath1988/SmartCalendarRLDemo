@@ -1,0 +1,44 @@
+{
+  "task_id": "smart-calendar",
+  "success": true,
+  "score": 1.0,
+  "steps": 3,
+  "trajectory": [
+    {
+      "step": 1,
+      "action": {
+        "command": "add_event",
+        "event_id": "meeting_1",
+        "start_time": "09:00",
+        "end_time": "10:00"
+      },
+      "reward": 0.5,
+      "done": false,
+      "error": null
+    },
+    {
+      "step": 2,
+      "action": {
+        "command": "search_slot",
+        "event_id": "search_1",
+        "start_time": "11:00",
+        "end_time": "12:00"
+      },
+      "reward": 0.2,
+      "done": false,
+      "error": null
+    },
+    {
+      "step": 3,
+      "action": {
+        "command": "add_event",
+        "event_id": "meeting_2",
+        "start_time": "12:00",
+        "end_time": "13:00"
+      },
+      "reward": 1.0,
+      "done": true,
+      "error": null
+    }
+  ]
+}

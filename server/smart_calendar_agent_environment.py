@@ -7,70 +7,10 @@
 """
 Smart Calendar Agent Environment Implementation.
 
-A simple test environment that echoes back messages sent to it.
-Perfect for testing HTTP server infrastructure.
+A RL-based scheduling environment that routes agent actions through
+specific handlers and evaluates them against formal task metrics.
 """
 
-# from openenv.core.env_server.interfaces import Environment
-# import uuid
-# from datetime import datetime
-# from typing import Tuple, Dict, Any, List
-
-# try:
-#     from ..models import MyCalendarAction, MyCalendarObservation, CalendarEvent, MyCalendarState
-# except ImportError:
-#     from models import MyCalendarAction, MyCalendarObservation, CalendarEvent, MyCalendarState
-
-
-# class CalendarEnv(Environment):
-#     def __init__(self):
-#         self.state = MyCalendarState(
-#             task_id=0,
-#             steps_taken=0,
-#         )
-
-#     # ---------------- RESET ----------------
-#     def reset(self) -> MyCalendarObservation:
-#         self.state = MyCalendarState(
-#             task_id=0,
-#             steps_taken=0,
-#         )
-
-#         return MyCalendarObservation(
-#             action_status="reset",
-#             score=0.0,
-#             done=True,
-#         )
-
-#     # ---------------- STEP ----------------
-#     def step(self, action: MyCalendarAction) -> MyCalendarObservation:
-#         self.state.task_id+=1
-#         self.state.steps_taken+=1
-#         response_score = len(action.response)
-#         command_score = 0
-#         calendar_score = 0
-#         command = action.command
-#         if command == 'block':
-#             command_score = 1
-#         elif command == "free":
-#             command_score = 2
-#         else:
-#             command_score = 3
-#         calendar = action.calendar
-#         for item in calendar:
-#             calendar_score+=len(item)
-#         score = response_score+command_score+calendar_score
-#         return MyCalendarObservation(
-#             action_status="reset",
-#             score=score,
-#             done=False,
-#             reward=score,
-#         )
-    
-#     # ----------------- STATE -------------------- #
-#     def state(self) -> MyCalendarState:
-#         return self.state
-    
 from openenv.core.env_server.interfaces import Environment
 from typing import Tuple, List, Optional, Any
 from datetime import datetime, timedelta
@@ -82,6 +22,16 @@ try:
     from ..models import MyCalendarAction, MyCalendarObservation,  MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction, CalendarEvent
 except ImportError:
     from models import MyCalendarAction, MyCalendarObservation, MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction, CalendarEvent
+
+try:
+    from task_definitions import get_task_by_level
+except ImportError:
+    from ..task_definitions import get_task_by_level
+
+try:
+    from server.grader import Grader
+except ImportError:
+    from .grader import Grader
 
 
 # ---------------- ACTION HANDLERS (Strategy Pattern) ----------------
@@ -147,12 +97,12 @@ class AddEventHandler(ActionHandler):
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
         # Duplicate event IDs should be explicitly penalized.
         if expected.event_id and self._find_slot_by_event_id(expected.event_id):
-            return -1.0, "Duplicate event id"
+            return 0.0, "Duplicate event id"
 
         slot_available = self._is_slot_available(expected.slot)
 
         if not slot_available:
-            return -1.0, "Time slot already occupied"
+            return 0.0, "Time slot already occupied"
         
         # Full success: both slot available and operation succeeded
         if slot_available and performed.success:
@@ -168,11 +118,11 @@ class AddEventHandler(ActionHandler):
                     title = expected.event_id or performed.event_id or "event"
                 event_slot.event = CalendarEvent(event_id=event_id, title=title)
             self._update_slot(event_slot)
-            return 1.0, "Event added successfully"
+            return 0.5, "Event added successfully"
         
         # Partial credit: correct slot identified but operation failed
         if slot_available and not performed.success:
-            return 0.3, "Event not added (slot identified but execution failed)"
+            return 0.15, "Event not added (slot identified but execution failed)"
 
 
 class DeleteEventHandler(ActionHandler):
@@ -184,18 +134,18 @@ class DeleteEventHandler(ActionHandler):
         # Full success: event found and deleted successfully
         if slot and performed.success:
             slot.event = None
-            return 1.0, "Event deleted successfully"
+            return 0.5, "Event deleted successfully"
         
         # Partial credit: event found but deletion failed
         if slot and not performed.success:
-            return 0.3, "Event found but deletion failed"
+            return 0.15, "Event found but deletion failed"
         
         # Wrong logic: deletion succeeded but event not found
         if not slot and performed.success:
-            return -0.5, "Event deletion succeeded but event not found"
+            return 0.0, "Event deletion succeeded but event not found"
         
         # Complete failure: event not found and deletion failed
-        return -1.0, "Failed to delete event (not found)"
+        return 0.0, "Failed to delete event (not found)"
 
 
 class MoveEventHandler(ActionHandler):
@@ -210,22 +160,22 @@ class MoveEventHandler(ActionHandler):
             performed.slot.event = current_slot.event
             self._update_slot(performed.slot)
             current_slot.event = None
-            return 1.0, "Event moved successfully"
+            return 0.5, "Event moved successfully"
         
         # Partial credit: current slot found but move failed
         if not performed.success and current_slot:
-            return 0.3, "Current event located but move failed"
+            return 0.15, "Current event located but move failed"
         
         # Partial credit: current slot and target valid but move failed
         if not performed.success and current_slot and target_available:
-            return 0.4, "Event and target slot valid but move execution failed"
+            return 0.2, "Event and target slot valid but move execution failed"
         
         # Wrong logic: move succeeded but prerequisites not met
         if performed.success and (not current_slot or not target_available):
-            return -0.5, "Move succeeded but event or target slot invalid"
+            return 0.0, "Move succeeded but event or target slot invalid"
         
         # Complete failure
-        return -1.0, "Failed to move event"
+        return 0.0, "Failed to move event"
 
 
 class SearchSlotHandler(ActionHandler):
@@ -236,22 +186,22 @@ class SearchSlotHandler(ActionHandler):
         
         # Full success: found available slot and returned correct one
         if performed.success and performed.slot and available_slot and self._is_same_time(performed.slot.start_time, available_slot.start_time):
-            return 1.0, "Slot found correctly"
+            return 0.5, "Slot found correctly"
         
         # Partial credit: search succeeded but returned wrong slot
         if performed.success and performed.slot and available_slot and not self._is_same_time(performed.slot.start_time, available_slot.start_time):
-            return 0.2, "Search succeeded but returned wrong slot"
+            return 0.1, "Search succeeded but returned wrong slot"
         
         # Partial credit: search succeeded but returned something when slots available
         if performed.success and performed.slot is None and available_slot:
-            return 0.1, "No slot returned but slots are available"
+            return 0.05, "No slot returned but slots are available"
         
         # Wrong logic: search succeeded but no available slots exist (shouldn't happen)
         if performed.success and not available_slot:
-            return -0.5, "Slot search succeeded but no slots are available"
+            return 0.0, "Slot search succeeded but no slots are available"
         
         # Complete failure: search failed
-        return -1.0, "Search failed"
+        return 0.0, "Search failed"
 
 
 # ---------------- COMMAND FACTORY ----------------
@@ -298,9 +248,13 @@ class CalendarEnv(Environment):
         self.failed_steps = 0
         self.max_steps = 10
         self.task_type = "medium"
-        self.task_objective = "Schedule 3 meetings efficiently"
-        self.task_goal = "schedule 3 meetings"
-        self.target_meetings = 3
+        
+        # Load formal task definition
+        self.task_def = get_task_by_level(self.task_type)
+        self.task_objective = self.task_def.objective
+        self.task_goal = self.task_def.goal
+        self.target_meetings = self.task_def.metrics.target_meetings
+
         self.calendar = self._build_daily_calendar()
         self.previous_action_signature = ""
 
@@ -349,21 +303,22 @@ class CalendarEnv(Environment):
             handler = ActionHandlerFactory.get_handler(expected.command, self.calendar)
             base_reward, message = handler.execute(expected, performed)
         except ValueError as e:
-            base_reward, message = -1.0, str(e)
+            base_reward, message = 0.0, str(e)
 
-        # Reward shaping: combine action correctness and objective progress.
-        scheduled = self._count_scheduled_meetings()
-        progress_reward = min(1.0, (scheduled / self.target_meetings)) if self.target_meetings > 0 else 0.0
-        task_bonus = self._task_reward_adjustment()
-        reward = base_reward + 0.5 * progress_reward + task_bonus
+        # Reward shaping: strictly 0.0-1.0 range based on Phase 2 requirements.
+        # base_reward from handlers is [0.0, 0.5].
+        # score from Grader is [0.0, 1.0].
+        score = self.compute_score()
+        reward = base_reward + (score * 0.5)
 
         if action_signature == self.previous_action_signature:
-            reward -= 0.5
+            reward *= 0.5 # Penalize repeat actions without going negative
 
-        if reward < 0:
+        reward = max(0.0, min(1.0, float(reward)))
+
+        if reward < 0.1:
             self.failed_steps += 1
 
-        score = self.compute_score()
         self.previous_action_signature = action_signature
 
         # Episode ends when max steps are reached, the goal is achieved, or too many failures occur.
@@ -404,77 +359,20 @@ class CalendarEnv(Environment):
     def _assign_task(self) -> None:
         """Assign one of the explicit evaluation tasks for this episode."""
         self.task_type = random.choice(["easy", "medium", "hard"])
-
-        if self.task_type == "easy":
-            self.target_meetings = 1
-            self.task_objective = "Task Easy: Schedule exactly 1 meeting"
-            self.task_goal = "schedule 1 meeting"
-
-        elif self.task_type == "medium":
-            self.target_meetings = 3
-            self.task_objective = "Task Medium: Schedule 3 meetings without overlap"
-            self.task_goal = "schedule 3 meetings"
-
-        else:
-            self.target_meetings = 5
-            self.task_objective = "Task Hard: Schedule 5 meetings with at least 1-hour gaps"
-            self.task_goal = "schedule 5 meetings with spacing"
+        self.task_def = get_task_by_level(self.task_type)
+        self.target_meetings = self.task_def.metrics.target_meetings
+        self.task_objective = self.task_def.objective
+        self.task_goal = self.task_def.goal
 
     def compute_score(self) -> float:
-        """Compute deterministic task score in [0, 1] for current episode state."""
-        scheduled = self._count_scheduled_meetings()
-
-        if self.task_type == "easy":
-            # Binary success.
-            return 1.0 if scheduled >= 1 else 0.0
-
-        elif self.task_type == "medium":
-            # Partial score based on completion.
-            return min(1.0, scheduled / 3)
-
-        elif self.task_type == "hard":
-            completion = min(1.0, scheduled / 5)
-
-            occupied = [slot for slot in self.calendar.slots if slot.event is not None]
-            occupied.sort(key=lambda s: s.start_time)
-
-            spacing_score = 0.0
-            for left, right in zip(occupied, occupied[1:]):
-                rt = datetime.fromisoformat(right.start_time) if isinstance(right.start_time, str) else right.start_time
-                lt = datetime.fromisoformat(left.end_time) if isinstance(left.end_time, str) else left.end_time
-                gap = (rt - lt).total_seconds() / 3600.0
-                if gap >= 1:
-                    spacing_score += 0.2
-                else:
-                    spacing_score -= 0.1
-
-            spacing_score = max(0.0, min(1.0, spacing_score))
-            return min(1.0, 0.6 * completion + 0.4 * spacing_score)
-
-        return 0.0
+        """Compute deterministic task score in [0, 1] using the Grader class."""
+        return Grader.compute_score(self.calendar, self.task_def)
 
     def _task_reward_adjustment(self) -> float:
-        """Return task-specific reward adjustment without changing core handlers."""
-        if self.task_type == "easy":
-            return 0.0
-        if self.task_type == "medium":
-            return 0.0
-
-        # Hard task bonus: prefer non-consecutive meetings (at least 2-hour gap).
-        occupied = [slot for slot in self.calendar.slots if slot.event is not None]
-        if len(occupied) < 2:
-            return 0.0
-
-        occupied.sort(key=lambda s: s.start_time)
-        gap_rewards = 0.0
-        for left, right in zip(occupied, occupied[1:]):
-            rt = datetime.fromisoformat(right.start_time) if isinstance(right.start_time, str) else right.start_time
-            lt = datetime.fromisoformat(left.end_time) if isinstance(left.end_time, str) else left.end_time
-            hours_gap = (rt - lt).total_seconds() / 3600.0
-            gap_rewards += 0.1 if hours_gap >= 1.0 else -0.1
-
-        # Keep hard-task adjustment bounded.
-        return max(-0.3, min(0.3, gap_rewards))
+        """Return task-specific reward adjustment based on Grader."""
+        # Calculate current score representation as part of continuous reward shaping
+        current_score = self.compute_score()
+        return max(0.0, current_score * 0.5)
 
     # ---------------- STATE ----------------
     @property
