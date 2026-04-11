@@ -42,10 +42,11 @@ $a_t = \langle C, e, t_{start}, t_{end} \rangle$
 Where the command $C \in \{add\_event, move\_event, delete\_event, search\_slot\}$, $e$ is an event ID, and $t$ represents timestamps.
 
 ### 3. Reward Function ($\mathcal{R}$)
-$r_t = \mathcal{R}(s_t, a_t) \rightarrow \mathbb{R}$
-- Valid operation ($C = add\_event$ into empty $c_i$): $+1.0$ (scaled with objective bonus)
-- Invalid operation (Collision/Constraints): $-1.0$
-- Redundant operation: $-0.5$
+$r_t = \mathcal{R}(s_t, a_t) \rightarrow [0.0, 1.0]$
+- The reward is a composite of the immediate action success (50%) and total objective progress (50%) as measured by the deterministic Grader.
+- **Valid operation** (Successful add/move/delete): Incremental reward up to $0.5$.
+- **Objective Progress**: Progressive bonus up to $0.5$ based on the total task score.
+- **Invalid/Redundant operations**: $0.0$ (Zero reward).
 
 ---
 

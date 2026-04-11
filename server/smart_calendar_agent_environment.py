@@ -97,12 +97,12 @@ class AddEventHandler(ActionHandler):
     def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
         # Duplicate event IDs should be explicitly penalized.
         if expected.event_id and self._find_slot_by_event_id(expected.event_id):
-            return -1.0, "Duplicate event id"
+            return 0.0, "Duplicate event id"
 
         slot_available = self._is_slot_available(expected.slot)
 
         if not slot_available:
-            return -1.0, "Time slot already occupied"
+            return 0.0, "Time slot already occupied"
         
         # Full success: both slot available and operation succeeded
         if slot_available and performed.success:
@@ -118,11 +118,11 @@ class AddEventHandler(ActionHandler):
                     title = expected.event_id or performed.event_id or "event"
                 event_slot.event = CalendarEvent(event_id=event_id, title=title)
             self._update_slot(event_slot)
-            return 1.0, "Event added successfully"
+            return 0.5, "Event added successfully"
         
         # Partial credit: correct slot identified but operation failed
         if slot_available and not performed.success:
-            return 0.3, "Event not added (slot identified but execution failed)"
+            return 0.15, "Event not added (slot identified but execution failed)"
 
 
 class DeleteEventHandler(ActionHandler):
@@ -134,18 +134,18 @@ class DeleteEventHandler(ActionHandler):
         # Full success: event found and deleted successfully
         if slot and performed.success:
             slot.event = None
-            return 1.0, "Event deleted successfully"
+            return 0.5, "Event deleted successfully"
         
         # Partial credit: event found but deletion failed
         if slot and not performed.success:
-            return 0.3, "Event found but deletion failed"
+            return 0.15, "Event found but deletion failed"
         
         # Wrong logic: deletion succeeded but event not found
         if not slot and performed.success:
-            return -0.5, "Event deletion succeeded but event not found"
+            return 0.0, "Event deletion succeeded but event not found"
         
         # Complete failure: event not found and deletion failed
-        return -1.0, "Failed to delete event (not found)"
+        return 0.0, "Failed to delete event (not found)"
 
 
 class MoveEventHandler(ActionHandler):
@@ -160,22 +160,22 @@ class MoveEventHandler(ActionHandler):
             performed.slot.event = current_slot.event
             self._update_slot(performed.slot)
             current_slot.event = None
-            return 1.0, "Event moved successfully"
+            return 0.5, "Event moved successfully"
         
         # Partial credit: current slot found but move failed
         if not performed.success and current_slot:
-            return 0.3, "Current event located but move failed"
+            return 0.15, "Current event located but move failed"
         
         # Partial credit: current slot and target valid but move failed
         if not performed.success and current_slot and target_available:
-            return 0.4, "Event and target slot valid but move execution failed"
+            return 0.2, "Event and target slot valid but move execution failed"
         
         # Wrong logic: move succeeded but prerequisites not met
         if performed.success and (not current_slot or not target_available):
-            return -0.5, "Move succeeded but event or target slot invalid"
+            return 0.0, "Move succeeded but event or target slot invalid"
         
         # Complete failure
-        return -1.0, "Failed to move event"
+        return 0.0, "Failed to move event"
 
 
 class SearchSlotHandler(ActionHandler):
@@ -186,22 +186,22 @@ class SearchSlotHandler(ActionHandler):
         
         # Full success: found available slot and returned correct one
         if performed.success and performed.slot and available_slot and self._is_same_time(performed.slot.start_time, available_slot.start_time):
-            return 1.0, "Slot found correctly"
+            return 0.5, "Slot found correctly"
         
         # Partial credit: search succeeded but returned wrong slot
         if performed.success and performed.slot and available_slot and not self._is_same_time(performed.slot.start_time, available_slot.start_time):
-            return 0.2, "Search succeeded but returned wrong slot"
+            return 0.1, "Search succeeded but returned wrong slot"
         
         # Partial credit: search succeeded but returned something when slots available
         if performed.success and performed.slot is None and available_slot:
-            return 0.1, "No slot returned but slots are available"
+            return 0.05, "No slot returned but slots are available"
         
         # Wrong logic: search succeeded but no available slots exist (shouldn't happen)
         if performed.success and not available_slot:
-            return -0.5, "Slot search succeeded but no slots are available"
+            return 0.0, "Slot search succeeded but no slots are available"
         
         # Complete failure: search failed
-        return -1.0, "Search failed"
+        return 0.0, "Search failed"
 
 
 # ---------------- COMMAND FACTORY ----------------
@@ -303,21 +303,22 @@ class CalendarEnv(Environment):
             handler = ActionHandlerFactory.get_handler(expected.command, self.calendar)
             base_reward, message = handler.execute(expected, performed)
         except ValueError as e:
-            base_reward, message = -1.0, str(e)
+            base_reward, message = 0.0, str(e)
 
-        # Reward shaping: combine action correctness and objective progress.
-        scheduled = self._count_scheduled_meetings()
-        progress_reward = min(1.0, (scheduled / self.target_meetings)) if self.target_meetings > 0 else 0.0
-        task_bonus = self._task_reward_adjustment()
-        reward = base_reward + 0.5 * progress_reward + task_bonus
+        # Reward shaping: strictly 0.0-1.0 range based on Phase 2 requirements.
+        # base_reward from handlers is [0.0, 0.5].
+        # score from Grader is [0.0, 1.0].
+        score = self.compute_score()
+        reward = base_reward + (score * 0.5)
 
         if action_signature == self.previous_action_signature:
-            reward -= 0.5
+            reward *= 0.5 # Penalize repeat actions without going negative
 
-        if reward < 0:
+        reward = max(0.0, min(1.0, float(reward)))
+
+        if reward < 0.1:
             self.failed_steps += 1
 
-        score = self.compute_score()
         self.previous_action_signature = action_signature
 
         # Episode ends when max steps are reached, the goal is achieved, or too many failures occur.
