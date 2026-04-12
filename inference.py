@@ -15,10 +15,11 @@ from models import MyCalendarAction, ExpectedAction, PerformedAction, Slot
 
 # ================= CONFIG =================
 # Mandatory Environment Variables
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME", "smart_calendar_agent_env:latest")
+EXISTING_BASE_URL = os.getenv("BASE_URL")  # if set, skip docker
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or ""
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 # Benchmark Configuration
 TASK_NAME = os.getenv("TASK_NAME", "smart-calendar")
@@ -111,7 +112,12 @@ async def main() -> None:
     log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
 
     try:
-        env = await SmartCalendarEnv.from_docker_image(IMAGE_NAME)
+        if EXISTING_BASE_URL:
+            env = SmartCalendarEnv(base_url=EXISTING_BASE_URL)
+            await env.connect()
+        else:
+            env = await SmartCalendarEnv.from_docker_image(IMAGE_NAME)
+        
         await env.reset()
 
         for step in range(1, MAX_STEPS + 1):
