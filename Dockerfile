@@ -7,6 +7,7 @@ COPY . .
 
 # Install dependencies
 RUN pip install --no-cache-dir -r server/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 ENV ENABLE_WEB_INTERFACE=true
 
 # Expose port
