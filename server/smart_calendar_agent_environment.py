@@ -162,13 +162,13 @@ class MoveEventHandler(ActionHandler):
             current_slot.event = None
             return 0.5, "Event moved successfully"
         
-        # Partial credit: current slot found but move failed
-        if not performed.success and current_slot:
-            return 0.15, "Current event located but move failed"
-        
         # Partial credit: current slot and target valid but move failed
         if not performed.success and current_slot and target_available:
             return 0.2, "Event and target slot valid but move execution failed"
+
+        # Partial credit: current slot found but move failed
+        if not performed.success and current_slot:
+            return 0.15, "Current event located but move failed"
         
         # Wrong logic: move succeeded but prerequisites not met
         if performed.success and (not current_slot or not target_available):
@@ -322,6 +322,7 @@ class CalendarEnv(Environment):
         self.previous_action_signature = action_signature
 
         # Episode ends when max steps are reached, the goal is achieved, or too many failures occur.
+        scheduled = self._count_scheduled_meetings()
         done = self.steps >= self.max_steps or scheduled >= self.target_meetings or self.failed_steps >= 3
 
         return MyCalendarObservation(

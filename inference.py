@@ -1,72 +1,58 @@
-import os
+﻿import os
 import json
 import asyncio
+import random
 from typing import List, Optional
 from datetime import datetime
 
 from dotenv import load_dotenv
-load_dotenv()
-
-import random
 from openai import OpenAI
 
 from client import SmartCalendarEnv
 from models import MyCalendarAction, ExpectedAction, PerformedAction, Slot
 
+load_dotenv()
+
 # ================= CONFIG =================
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "smart_calendar_agent_env")
 
-API_KEY = (
-    os.getenv("HF_TOKEN")
-    or os.getenv("API_KEY")
-    or os.getenv("OPENAI_API_KEY")
-)
-
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+# Use grader-injected proxy variables exactly as required by validator.
+API_KEY = os.environ["API_KEY"]
+API_BASE_URL = os.environ["API_BASE_URL"]
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 TASK_NAME = os.getenv("TASK_NAME", "smart-calendar")
 BENCHMARK = os.getenv("BENCHMARK", "smart_calendar")
-
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
+
 SUCCESS_SCORE_THRESHOLD = 0.6
 
-# ================= OPENAI CLIENT =================
-client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+
+def _llm_client() -> OpenAI:
+    return OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+
 
 # ================= LOGGING =================
-def log_start(task: str, env: str, model: str):
+def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]):
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
+    done_val = str(done).lower()
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
         flush=True,
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float], task_id: str, trajectory: list):
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    status_str = "SUCCESS" if success else "FAILED"
     print(
-        f"[END] status={status_str} success={str(success).lower()} steps={steps} score={score:.3f} total_reward={sum(rewards):.2f}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
-    
-    # Standardized specific output required by validator
-    standard_output = {
-        "task_id": task_id,
-        "success": success,
-        "score": score,
-        "steps": steps,
-        "trajectory": trajectory
-    }
-    print("\n" + "="*50)
-    print("--- STANDARDIZED EPISODE OUTPUT ---")
-    print(json.dumps(standard_output, indent=2))
-    print("="*50, flush=True)
+
 
 # ================= HELPERS =================
 def parse_time(t: str) -> datetime:
@@ -128,31 +114,27 @@ Example:
 """
 
 
-def get_llm_action(state) -> dict:
+def get_llm_action(llm_client: OpenAI, state) -> dict:
     try:
-        prompt = build_prompt(state)
-
-        response = client.chat.completions.create(
+        response = llm_client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": build_prompt(state)}],
             temperature=0.7,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = (response.choices[0].message.content or "").strip()
 
-        # extract JSON safely
         import re
+
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
-
         return json.loads(text)
-
     except Exception:
         return fallback_action(step=state.scheduled_meetings)
 
 
-def fallback_action(step):
+def fallback_action(step: int) -> dict:
     hour = 9 + step
     return {
         "command": "add_event",
@@ -172,46 +154,34 @@ def is_duplicate_action(action_json: dict, previous_action_json: Optional[dict])
         and action_json.get("end_time") == previous_action_json.get("end_time")
     )
 
+
 # ================= MAIN =================
-async def main():
-    random.seed(42)  # Seed management for reproducibility
+async def main() -> None:
+    llm_client = _llm_client()
+
+    random.seed(42)
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
     successful_events = 0
     previous_action_json: Optional[dict] = None
-    trajectory: List[dict] = []
-    task_id = TASK_NAME
 
     log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
 
     try:
-        print(f"[DEBUG] Attempting to start environment from image: {IMAGE_NAME}", flush=True)
         env = await SmartCalendarEnv.from_docker_image(IMAGE_NAME)
-        print(f"[DEBUG] Environment started successfully.", flush=True)
-    except Exception as e:
-        print(f"\n[CRITICAL ERROR] Failed to initialize Docker environment.", flush=True)
-        print(f"Details: {e}", flush=True)
-        print("-" * 30)
-        print("POSSIBLE FIXES:")
-        print(f"1. Ensure docker is running.")
-        print(f"2. Run 'docker build -t {IMAGE_NAME} .' to build the image.")
-        print(f"3. Check if port 8000 is already in use.")
-        print("-" * 30, flush=True)
-        log_end(False, 0, 0.0, [], task_id, [])
+    except Exception:
+        log_end(False, 0, 0.0, [])
         return
 
-
     try:
-        result = await env.reset()
+        _ = await env.reset()
 
         for step in range(1, MAX_STEPS + 1):
-
             state = await env.state()
 
-            action_json = get_llm_action(state)
-            
+            action_json = get_llm_action(llm_client, state)
             if action_json.get("command") == "remove_event":
                 action_json["command"] = "delete_event"
 
@@ -223,7 +193,7 @@ async def main():
                     start_time=parse_time(action_json["start_time"]).isoformat(),
                     end_time=parse_time(action_json["end_time"]).isoformat(),
                 )
-            except:
+            except Exception:
                 slot = Slot(
                     start_time=parse_time("09:00").isoformat(),
                     end_time=parse_time("10:00").isoformat(),
@@ -242,32 +212,20 @@ async def main():
                 ),
             )
 
-            error = None
-
             try:
                 result = await env.step(action)
-
                 reward = result.reward or 0.0
                 done = result.done
+                error = getattr(result, "last_action_error", None)
 
                 current_state = await env.state()
-                score = current_state.objective_progress
-                task_id = getattr(current_state, "episode_id", task_id)
-                
+                score = getattr(current_state, "objective_progress", score)
                 if reward >= 1.0:
                     successful_events += 1
-            except Exception as e:
+            except Exception as exc:
                 reward = 0.0
                 done = True
-                error = str(e)
-
-            trajectory.append({
-                "step": step,
-                "action": action_json,
-                "reward": reward,
-                "done": done,
-                "error": error
-            })
+                error = str(exc)
 
             log_step(step, json.dumps(action_json), reward, done, error)
 
@@ -289,12 +247,12 @@ async def main():
     finally:
         try:
             await env.close()
-        except Exception as e:
-            print(f"[DEBUG] env.close error: {e}", flush=True)
+        except Exception:
+            pass
 
-        log_end(success, steps_taken, score, rewards, task_id, trajectory)
+        score = min(max(score, 0.0), 1.0)
+        log_end(success, steps_taken, score, rewards)
 
 
-# ================= ENTRY =================
 if __name__ == "__main__":
     asyncio.run(main())
