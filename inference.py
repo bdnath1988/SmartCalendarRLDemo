@@ -7,14 +7,11 @@ import textwrap
 from typing import List, Optional
 from datetime import datetime
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
 # Importing the environment-specific models and client
 from client import SmartCalendarEnv
 from models import MyCalendarAction, ExpectedAction, PerformedAction, Slot
-
-load_dotenv()
 
 # ================= CONFIG =================
 # Mandatory Environment Variables
