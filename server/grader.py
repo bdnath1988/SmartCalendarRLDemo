@@ -68,15 +68,16 @@ class Grader:
         # Severe penalty for any overlapping events
         overlaps = cls.check_overlaps(occupied_slots)
         if overlaps > 0:
-            return 0.0  # Overlapping events is a hard fail for calendar validity in this environment
+            return 0.01  # Overlapping events is a hard fail for calendar validity in this environment (clamped > 0.0)
             
         if task.level == "easy":
             # Binary completion
-            return 1.0 if scheduled_count >= metrics.target_meetings else 0.0
+            score = 0.99 if scheduled_count >= metrics.target_meetings else 0.01
+            return score
             
         elif task.level == "medium":
             # Just proportional to scheduled count, assuming no overlaps
-            return float(completion_ratio)
+            score = float(completion_ratio)
             
         elif task.level == "hard":
             # Needs strict spacing
@@ -92,6 +93,5 @@ class Grader:
                 # If only 1 scheduled, they get no gap points
                 pass
                 
-            return round(score, 3)
-
-        return 0.0
+        # Clamp to strictly between (0, 1) to pass criteria
+        return max(0.01, min(0.99, round(score, 3)))

@@ -359,7 +359,17 @@ class CalendarEnv(Environment):
 
     def _assign_task(self) -> None:
         """Assign one of the explicit evaluation tasks for this episode."""
-        self.task_type = random.choice(["easy", "medium", "hard"])
+        import os
+        task_name = os.getenv("TASK_NAME", "")
+        if "easy" in task_name:
+            self.task_type = "easy"
+        elif "medium" in task_name:
+            self.task_type = "medium"
+        elif "hard" in task_name:
+            self.task_type = "hard"
+        else:
+            self.task_type = random.choice(["easy", "medium", "hard"])
+            
         self.task_def = get_task_by_level(self.task_type)
         self.target_meetings = self.task_def.metrics.target_meetings
         self.task_objective = self.task_def.objective

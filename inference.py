@@ -111,6 +111,7 @@ async def main() -> None:
     
     log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
 
+    env = None
     try:
         if EXISTING_BASE_URL:
             env = SmartCalendarEnv(base_url=EXISTING_BASE_URL)
@@ -168,16 +169,19 @@ async def main() -> None:
             if done:
                 break
 
+        # Since openenv strictly forbids 0.0 and 1.0 logic, clamped score
+        score = max(0.01, min(0.99, float(score)))
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as e:
         # print(f"[DEBUG] Runtime Error: {e}", flush=True)
         pass
     finally:
-        try:
-            await env.close()
-        except:
-            pass
+        if env is not None:
+            try:
+                await env.close()
+            except:
+                pass
         # Mandatory END log
         log_end(success, steps_taken, score, rewards)
 
