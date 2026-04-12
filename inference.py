@@ -22,7 +22,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 # Benchmark Configuration
-TASK_NAME = os.getenv("TASK_NAME", "smart-calendar")
+TASKS = ("task-easy-1", "task-medium-1", "task-hard-1")
 BENCHMARK = os.getenv("BENCHMARK", "smart_calendar")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 SUCCESS_SCORE_THRESHOLD = 0.6
@@ -102,14 +102,15 @@ def fallback_action(step: int) -> dict:
     }
 
 # ================= MAIN LOOP =================
-async def main() -> None:
-    llm_client = _llm_client()
+from typing import Any, Dict
+
+async def run_episode(task: str, llm_client: OpenAI) -> Dict[str, Any]:
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
     
-    log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
+    log_start(task, BENCHMARK, MODEL_NAME)
 
     env = None
     try:
@@ -117,7 +118,10 @@ async def main() -> None:
             env = SmartCalendarEnv(base_url=EXISTING_BASE_URL)
             await env.connect()
         else:
-            env = await SmartCalendarEnv.from_docker_image(IMAGE_NAME)
+            env = await SmartCalendarEnv.from_docker_image(
+                IMAGE_NAME,
+                env_vars={"TASK_NAME": task}
+            )
         
         await env.reset()
 
@@ -184,6 +188,31 @@ async def main() -> None:
                 pass
         # Mandatory END log
         log_end(success, steps_taken, score, rewards)
+
+    return {"task": task, "score": score, "success": success, "steps": steps_taken}
+
+async def main() -> None:
+    if not API_KEY:
+        print(
+            "[DEBUG] No API key found in HF_TOKEN/API_KEY env var. "
+            "LLM calls will fail and the script will use fallback no-op actions.",
+            flush=True,
+        )
+    llm_client = _llm_client()
+
+    results = []
+    for task in TASKS:
+        results.append(await run_episode(task, llm_client))
+
+    # Friendly aggregate (printed AFTER the strict-format [END] lines, so it
+    # doesn't break parsers that only consume the [START]/[STEP]/[END] grammar).
+    avg = sum(r["score"] for r in results) / len(results)
+    print(
+        "[SUMMARY] "
+        + " | ".join(f"{r['task']}={r['score']:.2f}" for r in results)
+        + f" | avg={avg:.2f}",
+        flush=True,
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
