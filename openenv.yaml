@@ -1,7 +1,13 @@
-spec_version: 1
-name: smart_calendar_agent
-type: space
-runtime: fastapi
-app: server.app:app
-port: 8000
+name: Smart Calendar Environment
 
+description: RL environment for scheduling meetings efficiently
+
+entry_point: server.smart_calendar_agent_environment:CalendarEnv
+
+observation_space:
+  type: dict
+
+action_space:
+  type: dict
+
+reward_range: [0.0, 1.0]

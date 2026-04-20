@@ -6,6 +6,6 @@
 
 """Smart Calendar Agent environment server components."""
 
-# from .smart_calendar_agent_environment import SmartCalendarAgentEnvironment
+# from .smart_calendar_agent_environment import CalendarEnv
 
-__all__ = ["SmartCalendarAgentEnvironment"]
+__all__ = ["CalendarEnv"]

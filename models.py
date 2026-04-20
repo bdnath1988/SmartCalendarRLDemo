@@ -4,47 +4,85 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""
-Data models for the Smart Calendar Agent Environment.
-
-The smart_calendar_agent environment is a simple test environment that echoes back messages.
-"""
+"""Data models for the Smart Calendar Agent Environment."""
 
 from openenv.core.env_server.types import Action, Observation, State
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from typing import List, Optional, Dict, Any, Literal
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
+
 
 # 1. Calendar Event
 class CalendarEvent(BaseModel):
-    id: str = Field(description="Unique ID for the event")
-    title: str = Field(description="Name of the meeting")
-    start: datetime = Field(description="Start time (ISO 8601)")
-    end: datetime = Field(description="End time (ISO 8601)")
+    """Represents a calendar event with a unique identifier and title."""
+    event_id: str = Field(description="Unique ID for the event")
+    title: str = Field(description="Title of the event")
 
-    @field_validator("end")
-    def check_time(cls, v, info: ValidationInfo):
-        start = info.data.get("start") if info.data else None
-        if start is not None and v <= start:
-            raise ValueError("End must be after start")
-        return v
+# 2. Slot
+class Slot(BaseModel):
+    """Represents a time slot, optionally linked to a calendar event."""
+    start_time: str = Field(description="Start time (ISO 8601)")
+    end_time: str = Field(description="End time (ISO 8601)")
+    event: Optional[CalendarEvent] = Field(default=None, description="Optional event assigned to this slot")
+
+# 3. Expected Action
+class ExpectedAction(BaseModel):
+    """Describes an action the calendar agent is expected to perform."""
+    command: Literal["add_event", "move_event", "delete_event", "search_slot"] = Field(description="command (mandatory)")
+    slot: Optional[Slot] = Field(default=None, description="Time slot for the action")
+    event_id: Optional[str] = Field(default=None, description="Event ID")
+
+# 4. Performed Action
+class PerformedAction(BaseModel):
+    """Represents the result of a performed action, including success and optional slot details."""
+    success: bool = Field(description="Whether the action was successful")
+    event_id: Optional[str] = Field(default=None, description="Optional ID")
+    slot: Optional[Slot] = Field(default=None, description="Optional time range")
 
 
-# 2. Action
+# 5. Calendar
+class Calendar(BaseModel):
+    """Represents a calendar containing a list of available slots."""
+    slots: List[Slot] = Field(description="List of slots")
+
+from pydantic import model_validator
+import json
+
 class MyCalendarAction(Action):
-    command: Literal["block", "free", "search"]
-    calendar: Dict[str, list]
-    response: Dict[str, str]
+    """Encapsulates a calendar action with expected and actual performed details."""
+    expected_action: ExpectedAction = Field(description="Expected action to perform")
+    performed_action: PerformedAction = Field(description="Action that was actually performed")
+
+    @model_validator(mode='before')
+    @classmethod
+    def parse_stringified_actions(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            for field in ["expected_action", "performed_action"]:
+                val = values.get(field)
+                if isinstance(val, str):
+                    try:
+                        values[field] = json.loads(val)
+                    except Exception:
+                        pass
+        return values
 
 
 # 3. Observation
 class MyCalendarObservation(Observation):
-    action_status: str
-    score: float
-    done: bool
+    """Represents observations returned from the calendar environment."""
+    message: str = Field(description="Observation message")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional observation metadata")
 
 
 # 4. Internal State
 class MyCalendarState(State):
-    task_id: int
-    steps_taken: int
+    """Tracks the internal state of the calendar environment."""
+    calendar: Calendar = Field(description="Current calendar state")
+    task_objective: str = Field(default="Schedule 3 meetings efficiently", description="Current task objective for the episode")
+    task_goal: str = Field(default="schedule 3 meetings", description="Short task goal string for prompting")
+    events: List[str] = Field(default_factory=list, description="List of scheduled event IDs")
+    free_slots: List[str] = Field(default_factory=list, description="List of currently free slot labels")
+    target_meetings: int = Field(default=3, description="Target number of meetings for objective completion")
+    scheduled_meetings: int = Field(default=0, description="Number of meetings currently scheduled")
+    objective_progress: float = Field(default=0.0, description="Progress toward objective in range [0, 1]")
+    failed_steps: int = Field(default=0, description="Number of failed steps in the current episode")

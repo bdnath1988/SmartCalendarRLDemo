@@ -6,12 +6,12 @@
 
 """Smart Calendar Agent Environment."""
 
-from .client import SmartCalendarAgentEnv
+from .client import SmartCalendarEnv
 from .models import MyCalendarAction, MyCalendarObservation, MyCalendarState
 
 __all__ = [
     "MyCalendarAction",
     "MyCalendarObservation",
-    "SmartCalendarAgentEnv",
+    "SmartCalendarEnv",
     "MyCalendarState",
 ]

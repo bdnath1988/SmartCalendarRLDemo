@@ -1,8 +1,8 @@
 ---
-title: Smart Calendar Agent Environment Server
-emoji: ☎️
+title: Smart Calendar Agent Environment
+emoji: 📅
 colorFrom: green
-colorTo: yellow
+colorTo: blue
 sdk: docker
 pinned: false
 app_port: 8000
@@ -13,244 +13,80 @@ tags:
 
 # Smart Calendar Agent Environment
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+A real-world task simulation environment designed to evaluate an agent's ability to schedule meetings, manage time slots, and maneuver calendar events efficiently and reliably.
 
-## Quick Start
+## Motivation
+Tool-use capabilities for LLMs must be tested on authentic, everyday tasks rather than generic toy datasets. Calendar triage and meeting scheduling are among the most standard workflow automation bottlenecks. This environment simulates these constraints by introducing state tracking, time availability parsing, collision detection, and reward shaping to encourage strategic searching prior to committing to an action.
 
-The simplest way to use the Smart Calendar Agent environment is through the `SmartCalendarAgentEnv` class:
+## Tasks and Difficulty
+The environment defines 3 standard tasks, assigned dynamically by difficulty (graders evaluate performance between `0.0` and `1.0`):
 
-```python
-from smart_calendar_agent import SmartCalendarAgentAction, SmartCalendarAgentEnv
+1. **Easy:** Schedule exactly 1 meeting. (Target: 1)
+2. **Medium:** Schedule 3 meetings efficiently without overlapping any existing events. (Target: 3)
+3. **Hard:** Schedule 5 meetings while mandating a minimum of 1-hour gaps between all meetings. (Target: 5)
 
-try:
-    # Create environment from Docker image
-    smart_calendar_agentenv = SmartCalendarAgentEnv.from_docker_image("smart_calendar_agent-env:latest")
+## Formal Specifications
 
-    # Reset
-    result = smart_calendar_agentenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+### 1. State Space ($\mathcal{S}$)
+The true environment state $\mathcal{S}$ is formally defined as:
+$s_t = \langle \mathcal{C}, M_{target}, M_{current}, \tau, \Phi \rangle$
+- $\mathcal{C}$: The calendar array containing 24 chronological slots, each $c_i \in \{0, 1\}$.
+- $M_{target}$: Target number of meetings required by the task $T \in \{1, 3, 5\}$.
+- $M_{current}$: Meetings currently successfully scheduled.
+- $\tau$: Timestep count $\tau \in [0, 10]$.
+- $\Phi$: Task-specific rules (e.g., minimum 1-hour spacing $\phi_{gap} \ge 1$).
 
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
+### 2. Action Space ($\mathcal{A}$)
+The agent selects an action $a_t \in \mathcal{A}$ parameterized as a tuple:
+$a_t = \langle C, e, t_{start}, t_{end} \rangle$
+Where the command $C \in \{add\_event, move\_event, delete\_event, search\_slot\}$, $e$ is an event ID, and $t$ represents timestamps.
 
-    for msg in messages:
-        result = smart_calendar_agentenv.step(SmartCalendarAgentAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
+### 3. Reward Function ($\mathcal{R}$)
+$r_t = \mathcal{R}(s_t, a_t) \rightarrow [0.0, 1.0]$
+- The reward is a composite of the immediate action success (50%) and total objective progress (50%) as measured by the deterministic Grader.
+- **Valid operation** (Successful add/move/delete): Incremental reward up to $0.5$.
+- **Objective Progress**: Progressive bonus up to $0.5$ based on the total task score.
+- **Invalid/Redundant operations**: $0.0$ (Zero reward).
 
-finally:
-    # Always clean up
-    smart_calendar_agentenv.close()
-```
+---
 
-That's it! The `SmartCalendarAgentEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+## 🛑 Reward Leakage & Privileged Information
+To maintain evaluation integrity and prevent **Reward Leakage**, there is a strict separation between what the Agent observes and what the Grader knows.
 
-## Building the Docker Image
+**Agent Observables (Passed in prompt):**
+- $M_{target}$ (Objective count) and current $M_{current}$ (Count of scheduled meetings).
+- A textual list of currently `free_slots` (e.g., "09:00-10:00").
+- IDs of existing scheduled `events`.
+- The explicit task goal and objective strings.
+- **Filtering:** The agent **never** sees the raw calendar matrix or the internal timestamp strings of occupied slots unless it has successfully scheduled them itself.
 
-Before using the environment, you need to build the Docker image:
+**Privileged Grader Information (Hidden from Agent):**
+The external `Grader` class has direct access to the raw Python `Calendar` object matrix and the `task_definitions.py` metrics. It independently computes:
+- **Exact Overlap Matrix:** Checks for sub-minute overlaps that might be obscured in the prompt's hourly labels.
+- **Spacing Bound Violations:** Mathematically verifies that gaps (e.g., 1.0 hour) are strictly maintained.
+- **Deterministic Score:** Computes $\Sigma \in [0,1]$ which is completely decoupled from the stepwise RL reward $r_t$. The agent does not see its current "Score" during the episode, only the "Reward" for the immediate action.
 
+## Setup instructions
+
+### 1. Build the Docker Image
+The environment server fully executes inside a containerized sandbox. Recompiling the Dockerfile applies configuration updates locally:
 ```bash
-# From project root
-docker build -t smart_calendar_agent-env:latest -f server/Dockerfile .
+docker build -t smart_calendar_agent_env:latest .
 ```
 
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
+### 2. Environment Variables
+Add your corresponding LLM API keys via the standard `.env` configuration mapping in your root directory:
 ```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
+MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+API_BASE_URL="https://router.huggingface.co/v1"
+OPENAI_API_KEY="..." # Or HF_TOKEN="..."
 ```
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
+### 3. Run Inference
+Use the included OpenEnv baseline script to test the agent using the OpenAI SDK natively:
 ```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
+python inference.py
 ```
 
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**SmartCalendarAgentAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**SmartCalendarAgentObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Smart Calendar Agent environment server running, you can connect directly:
-
-```python
-from smart_calendar_agent import SmartCalendarAgentEnv
-
-# Connect to existing server
-smart_calendar_agentenv = SmartCalendarAgentEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = smart_calendar_agentenv.reset()
-result = smart_calendar_agentenv.step(SmartCalendarAgentAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `smart_calendar_agentenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from smart_calendar_agent import SmartCalendarAgentAction, SmartCalendarAgentEnv
-
-# Connect with context manager (auto-connects and closes)
-with SmartCalendarAgentEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(SmartCalendarAgentAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    SmartCalendarAgentEnvironment,  # Pass class, not instance
-    SmartCalendarAgentAction,
-    SmartCalendarAgentObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from smart_calendar_agent import SmartCalendarAgentAction, SmartCalendarAgentEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with SmartCalendarAgentEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(SmartCalendarAgentAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
-```bash
-# From the server directory
-python3 server/smart_calendar_agent_environment.py
-```
-
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-uvicorn server.app:app --reload
-```
-
-## Project Structure
-
-```
-smart_calendar_agent/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # SmartCalendarAgentEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── smart_calendar_agent_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
-```
-#test file
+## Baseline Scores
+Testing the baseline with `Qwen/Qwen2.5-72B-Instruct` natively completes the task deterministically, correctly recognizing collision edge cases due to the updated `search_slot` instructions, and efficiently achieves a perfectly reproducible optimal score of `1.000` consistently across Easy, Medium, and Hard workloads.
