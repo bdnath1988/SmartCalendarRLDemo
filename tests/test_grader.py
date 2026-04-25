@@ -1,5 +1,3 @@
-import pytest
-from datetime import datetime, timedelta
 from models import Calendar, Slot, CalendarEvent
 from server.grader import Grader
 from task_definitions import CalendarTask, TaskDifficultyMetrics
@@ -25,22 +23,28 @@ def build_slot(idx: int, start: str, end: str, has_event: bool = True) -> Slot:
     return Slot(start_time=start, end_time=end, event=event)
 
 def test_grader_easy_success():
-    """Test 1: Easy task requires only 1 meeting. Ensures binary scoring."""
+    """Test 1: Easy task requires only 1 meeting. Ensures binary scoring.
+
+    Grader clamps scores to (0.01, 0.99) to stay strictly within (0, 1).
+    """
     cal = Calendar(slots=[
         build_slot(1, "2026-04-11T09:00:00", "2026-04-11T10:00:00")
     ])
     score = Grader.compute_score(cal, easy_task)
-    assert score == 1.0
+    assert score == 0.99
 
 def test_grader_hard_fail_overlaps():
-    """Test 2: Determinism & Edge Case - Overlapping events should result in 0.0 score."""
+    """Test 2: Determinism & Edge Case - Overlapping events should result in near-zero score.
+
+    Grader returns 0.01 (not 0.0) for overlaps to stay strictly above 0.
+    """
     cal = Calendar(slots=[
         build_slot(1, "2026-04-11T09:00:00", "2026-04-11T10:00:00"),
         # Overlaps perfectly
         build_slot(2, "2026-04-11T09:30:00", "2026-04-11T10:30:00")
     ])
     score = Grader.compute_score(cal, medium_task)
-    assert score == 0.0
+    assert score == 0.01
 
 def test_grader_medium_proportional():
     """Test 3: Medium task scoring should be directly proportional to scheduled count."""
@@ -70,7 +74,10 @@ def test_grader_hard_spacing_violations():
     assert abs(score - 0.660) < 0.001
 
 def test_grader_hard_perfect():
-    """Test 5: Edge case handling bounded exactly to 1.0 when perfectly executed."""
+    """Test 5: Perfect hard execution is clamped to 0.99 (grader bound is strictly < 1).
+
+    Grader clamps scores to (0.01, 0.99) to stay strictly within (0, 1).
+    """
     cal = Calendar(slots=[
         build_slot(1, "2026-04-11T08:00:00", "2026-04-11T09:00:00"),
         build_slot(2, "2026-04-11T10:00:00", "2026-04-11T11:00:00"),
@@ -79,4 +86,4 @@ def test_grader_hard_perfect():
         build_slot(5, "2026-04-11T16:00:00", "2026-04-11T17:00:00")
     ])
     score = Grader.compute_score(cal, hard_task)
-    assert score == 1.0
+    assert score == 0.99

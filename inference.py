@@ -1,8 +1,9 @@
 ﻿import os
 import json
 import asyncio
-import random
 import re
+from dotenv import load_dotenv
+load_dotenv()
 import textwrap
 from typing import List, Optional
 from datetime import datetime
@@ -23,6 +24,11 @@ MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 # Benchmark Configuration
 TASKS = ("task-easy-1", "task-medium-1", "task-hard-1")
+_TASK_DIFFICULTY = {
+    "task-easy-1": "easy",
+    "task-medium-1": "medium",
+    "task-hard-1": "hard",
+}
 BENCHMARK = os.getenv("BENCHMARK", "smart_calendar")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 SUCCESS_SCORE_THRESHOLD = 0.6
@@ -56,22 +62,46 @@ def parse_time(t: str) -> datetime:
     return datetime.fromisoformat(f"{today.isoformat()}T{t}:00")
 
 def build_prompt(state) -> str:
+    dep_graph: dict = getattr(state, "dependency_graph", {})
+    scheduled: list = getattr(state, "scheduled_meeting_ids", getattr(state, "events", []))
+    free_slots: list = getattr(state, "free_slots", [])[:10]
+
+    # Meetings whose dependencies are all satisfied and that aren't yet scheduled
+    available = [
+        mid for mid, deps in dep_graph.items()
+        if mid not in scheduled and all(d in scheduled for d in deps)
+    ]
+
     return textwrap.dedent(f"""
         You are a smart calendar scheduling agent.
         Objective: {state.task_objective}
-        Goal: {getattr(state, 'task_goal', 'schedule meetings')}
 
-        Current State:
-        - Scheduled: {state.scheduled_meetings} / {state.target_meetings}
-        - Existing events: {getattr(state, 'events', [])}
-        - Free slots: {getattr(state, 'free_slots', [])[:8]}
+        Progress: {state.scheduled_meetings} / {state.target_meetings} meetings scheduled
+        Already scheduled: {scheduled}
+        Ready to schedule now (dependencies met): {available}
+        Dependency order: {dep_graph}
 
-        Return ONLY valid JSON:
+        Free slots (format: "day HH:MM-HH:MM UTC"): {free_slots}
+
+        Commands (return ONE as JSON):
+          add_event    — book a new meeting   (requires: event_id, day, start_time, end_time)
+          search_slot  — query free slots     (requires: day)
+          move_event   — reschedule a meeting (requires: event_id, day, start_time, end_time)
+          delete_event — remove a meeting     (requires: event_id)
+
+        Rules:
+        - event_id MUST be one of the ready-to-schedule meetings listed above
+        - day MUST be a weekday name, e.g. "monday"
+        - start_time / end_time in HH:MM UTC format (working hours 08:00-18:00)
+        - Schedule meetings in dependency order
+
+        Return ONLY valid JSON, for example:
         {{
           "command": "add_event",
-          "event_id": "4",
-          "start_time": "12:00",
-          "end_time": "13:00"
+          "event_id": "{available[0] if available else 'kickoff'}",
+          "day": "monday",
+          "start_time": "09:00",
+          "end_time": "10:00"
         }}
     """).strip()
 
@@ -90,13 +120,22 @@ def get_llm_action(llm_client: OpenAI, state) -> dict:
         return json.loads(text)
     except Exception as e:
         # print(f"[DEBUG] Model request failed: {e}", flush=True)
-        return fallback_action(step=state.scheduled_meetings)
+        return fallback_action(step=state.scheduled_meetings, state=state)
 
-def fallback_action(step: int) -> dict:
+def fallback_action(step: int, state=None) -> dict:
     hour = 9 + (step % 8)
+    dep_graph: dict = getattr(state, "dependency_graph", {}) if state else {}
+    scheduled: list = getattr(state, "scheduled_meeting_ids", getattr(state, "events", [])) if state else []
+    available = [
+        mid for mid, deps in dep_graph.items()
+        if mid not in scheduled and all(d in scheduled for d in deps)
+    ]
+    event_id = available[0] if available else "kickoff"
+    days = ["monday", "tuesday", "wednesday", "thursday", "friday"]
     return {
         "command": "add_event",
-        "event_id": f"fb_{step}_{random.randint(10,99)}",
+        "event_id": event_id,
+        "day": days[step % len(days)],
         "start_time": f"{hour:02d}:00",
         "end_time": f"{hour + 1:02d}:00",
     }
@@ -123,7 +162,7 @@ async def run_episode(task: str, llm_client: OpenAI) -> Dict[str, Any]:
                 env_vars={"TASK_NAME": task}
             )
         
-        await env.reset()
+        await env.reset(task=_TASK_DIFFICULTY.get(task, "easy"))
 
         for step in range(1, MAX_STEPS + 1):
             state = await env.state()
@@ -141,22 +180,27 @@ async def run_episode(task: str, llm_client: OpenAI) -> Dict[str, Any]:
                 start_iso, end_iso = "2026-04-12T09:00:00", "2026-04-12T10:00:00"
 
             slot = Slot(start_time=start_iso, end_time=end_iso)
+            event_id = str(action_json.get("event_id", step))
             action = MyCalendarAction(
                 expected_action=ExpectedAction(
                     command=action_json.get("command", "add_event"),
                     slot=slot,
-                    event_id=str(action_json.get("event_id", step))
+                    event_id=event_id,
+                    day=action_json.get("day"),
                 ),
                 performed_action=PerformedAction(
                     success=True,
                     slot=slot,
-                    event_id=str(action_json.get("event_id", step))
+                    event_id=event_id,
                 )
             )
 
             result = await env.step(action)
-            
-            reward = result.reward or 0.0
+
+            # metadata lives in result.observation.metadata (OpenEnv StepResponse)
+            obs = getattr(result, "observation", result)
+            meta = getattr(obs, "metadata", None) or {}
+            reward = meta.get("reward_objective_progress", getattr(result, "reward", 0.0) or 0.0)
             done = result.done
             error = getattr(result, "last_action_error", None)
 
@@ -178,8 +222,7 @@ async def run_episode(task: str, llm_client: OpenAI) -> Dict[str, Any]:
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as e:
-        # print(f"[DEBUG] Runtime Error: {e}", flush=True)
-        pass
+        print(f"[DEBUG] Runtime Error: {e}", flush=True)
     finally:
         if env is not None:
             try:

@@ -34,6 +34,8 @@ class ExpectedAction(BaseModel):
     command: Literal["add_event", "move_event", "delete_event", "search_slot", "reschedule_event"] = Field(description="command (mandatory)")
     slot: Optional[Slot] = Field(default=None, description="Time slot for the action")
     event_id: Optional[str] = Field(default=None, description="Event ID")
+    day: Optional[str] = Field(default=None, description="Day name for multi-day scheduling, e.g. 'monday'")
+    attendees: Optional[List[str]] = Field(default=None, description="Attendee names for slot-search filtering")
 
 # 4. Performed Action
 class PerformedAction(BaseModel):

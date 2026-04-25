@@ -103,6 +103,7 @@ class TaskSpec(BaseModel):
     max_steps: int = Field(description="Maximum agent steps allowed per episode")
     reward_mode: Literal["dense", "sparse"] = Field(description="'dense' gives step-level signals; 'sparse' gives 0 until complete")
     research_mode: bool = Field(default=False, description="If True, excluded from HACKATHON_CURRICULUM")
+    min_gap_hours: int = Field(default=0, description="Minimum gap (in hours) required between any two meetings on the same day")
 
 
 # ---- Attendee Personas (fixed, as per CLAUDE.md) ----
@@ -185,6 +186,7 @@ HARD_SPEC = TaskSpec(
     attendee_names=["Alice", "Bob", "Carol"],
     max_steps=30,
     reward_mode="dense",
+    min_gap_hours=1,
 )
 
 SUPER_HARD_SPEC = TaskSpec(
