@@ -35,18 +35,20 @@ class SmartCalendarEnv(
     # -------- PARSE RESPONSE --------
     def _parse_result(self, payload: Dict) -> StepResult[MyCalendarObservation]:
         obs_data = payload.get("observation", {})
+        reward = payload.get("reward", obs_data.get("reward", 0))
+        done = payload.get("done", obs_data.get("done", False))
 
         observation = MyCalendarObservation(
             message=obs_data.get("message", ""),
-            reward=payload.get("reward", 0),
-            done=payload.get("done", False),
+            reward=reward,
+            done=done,
             metadata=obs_data.get("metadata", {})
         )
 
         return StepResult(
             observation=observation,
-            reward=payload.get("reward", 0),
-            done=payload.get("done", False),
+            reward=reward,
+            done=done,
         )
 
     # -------- PARSE STATE --------
@@ -66,4 +68,13 @@ class SmartCalendarEnv(
             scheduled_meetings=payload.get("scheduled_meetings", 0),
             objective_progress=payload.get("objective_progress", 0.0),
             failed_steps=payload.get("failed_steps", 0),
+            week=payload.get("week"),
+            attendees=payload.get("attendees", []),
+            cascade_conflicts=payload.get("cascade_conflicts", []),
+            attendee_satisfaction=payload.get("attendee_satisfaction", 0.0),
+            dependency_graph=payload.get("dependency_graph", {}),
+            scheduled_meeting_ids=payload.get(
+                "scheduled_meeting_ids",
+                payload.get("events", []),
+            ),
         )
