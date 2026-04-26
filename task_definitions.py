@@ -8,8 +8,17 @@
 Formal task definitions with increasing difficulty for evaluation progression.
 """
 
+from enum import Enum
 from pydantic import BaseModel, Field
-from typing import List
+from typing import Any, Dict, List, Literal
+
+try:
+    from models import Attendee
+except ImportError:
+    from ..models import Attendee
+
+
+# ---- Existing models (kept for backward compatibility with server/ and grader) ----
 
 class TaskDifficultyMetrics(BaseModel):
     """Metrics defining the difficulty of a specific task."""
@@ -70,3 +79,150 @@ def get_task_by_level(level: str) -> CalendarTask:
         if task.level == level:
             return task
     return EVALUATION_TASKS[0]
+
+
+# ---- Round 2: TaskDifficulty ----
+
+class TaskDifficulty(Enum):
+    """Curriculum difficulty levels. SUPER_HARD is research-only."""
+    EASY       = "easy"
+    MEDIUM     = "medium"
+    HARD       = "hard"
+    SUPER_HARD = "super_hard"
+
+
+# ---- Round 2: TaskSpec ----
+
+class TaskSpec(BaseModel):
+    """Full specification for a Round 2 multi-attendee scheduling task."""
+
+    difficulty: TaskDifficulty = Field(description="Curriculum difficulty level")
+    meetings: List[str] = Field(description="Ordered list of meeting IDs to schedule")
+    days: List[str] = Field(description="Work days available for scheduling")
+    attendee_names: List[str] = Field(description="Names of attendees required for this task")
+    max_steps: int = Field(description="Maximum agent steps allowed per episode")
+    reward_mode: Literal["dense", "sparse"] = Field(description="'dense' gives step-level signals; 'sparse' gives 0 until complete")
+    research_mode: bool = Field(default=False, description="If True, excluded from HACKATHON_CURRICULUM")
+    min_gap_hours: int = Field(default=0, description="Minimum gap (in hours) required between any two meetings on the same day")
+
+
+# ---- Attendee Personas (fixed, as per CLAUDE.md) ----
+
+THREE_ATTENDEES: List[Attendee] = [
+    Attendee(
+        name="Alice",
+        timezone="Asia/Kolkata",
+        priority=1,
+        preferred_start_hour=10,
+        preferred_end_hour=16,
+    ),
+    Attendee(
+        name="Bob",
+        timezone="Europe/London",
+        priority=2,
+        preferred_start_hour=9,
+        preferred_end_hour=17,
+    ),
+    Attendee(
+        name="Carol",
+        timezone="America/Los_Angeles",
+        priority=3,
+        preferred_start_hour=9,
+        preferred_end_hour=18,
+    ),
+]
+
+
+# ---- Full Dependency Graph ----
+# Each entry: {"deps": [meeting_ids that must be scheduled first], "attendees": [name list]}
+
+FULL_DEPENDENCY_GRAPH: Dict[str, Dict[str, Any]] = {
+    "kickoff":         {"deps": [],                                      "attendees": ["Alice"]},
+    "standup_mon":     {"deps": [],                                      "attendees": ["Alice", "Bob", "Carol"]},
+    "standup_tue":     {"deps": ["standup_mon"],                         "attendees": ["Alice", "Bob", "Carol"]},
+    "standup_wed":     {"deps": ["standup_tue"],                         "attendees": ["Alice", "Bob", "Carol"]},
+    "standup_thu":     {"deps": ["standup_wed"],                         "attendees": ["Alice", "Bob", "Carol"]},
+    "requirements":    {"deps": ["kickoff"],                             "attendees": ["Alice", "Bob", "Carol"]},
+    "backend_design":  {"deps": ["requirements"],                        "attendees": ["Bob"]},
+    "frontend_design": {"deps": ["requirements"],                        "attendees": ["Carol"]},
+    "integration":     {"deps": ["backend_design", "frontend_design"],   "attendees": ["Bob", "Carol"]},
+    "qa_planning":     {"deps": ["integration"],                         "attendees": ["Bob", "Carol"]},
+    "launch_review":   {"deps": ["qa_planning"],                         "attendees": ["Alice", "Bob", "Carol"]},
+}
+
+
+# ---- Task Spec Instances ----
+
+EASY_SPEC = TaskSpec(
+    difficulty=TaskDifficulty.EASY,
+    meetings=["kickoff"],
+    days=["monday"],
+    attendee_names=["Alice"],
+    max_steps=10,
+    reward_mode="dense",
+)
+
+MEDIUM_SPEC = TaskSpec(
+    difficulty=TaskDifficulty.MEDIUM,
+    meetings=["kickoff", "requirements", "backend_design"],
+    days=["monday", "tuesday", "wednesday"],
+    attendee_names=["Alice", "Bob"],
+    max_steps=20,
+    reward_mode="dense",
+)
+
+HARD_SPEC = TaskSpec(
+    difficulty=TaskDifficulty.HARD,
+    meetings=[
+        "kickoff",
+        "requirements",
+        "backend_design",
+        "frontend_design",
+        "integration",
+        "qa_planning",
+        "launch_review",
+    ],
+    days=["monday", "tuesday", "wednesday", "thursday", "friday"],
+    attendee_names=["Alice", "Bob", "Carol"],
+    max_steps=30,
+    reward_mode="dense",
+    min_gap_hours=1,
+)
+
+SUPER_HARD_SPEC = TaskSpec(
+    difficulty=TaskDifficulty.SUPER_HARD,
+    meetings=[
+        "kickoff",
+        "standup_mon",
+        "standup_tue",
+        "standup_wed",
+        "standup_thu",
+        "requirements",
+        "backend_design",
+        "frontend_design",
+        "integration",
+        "qa_planning",
+        "launch_review",
+    ],
+    days=["monday", "tuesday", "wednesday", "thursday", "friday"],
+    attendee_names=["Alice", "Bob", "Carol"],
+    max_steps=40,
+    reward_mode="sparse",
+    research_mode=True,
+)
+
+
+# ---- Curricula ----
+
+HACKATHON_CURRICULUM: List[TaskDifficulty] = [
+    TaskDifficulty.EASY,
+    TaskDifficulty.MEDIUM,
+    TaskDifficulty.HARD,
+]
+
+FULL_CURRICULUM: List[TaskDifficulty] = [
+    TaskDifficulty.EASY,
+    TaskDifficulty.MEDIUM,
+    TaskDifficulty.HARD,
+    TaskDifficulty.SUPER_HARD,
+]

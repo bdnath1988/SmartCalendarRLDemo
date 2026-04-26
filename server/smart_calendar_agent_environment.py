@@ -5,403 +5,435 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Smart Calendar Agent Environment Implementation.
+Smart Calendar Agent Environment — Round 2.
 
-A RL-based scheduling environment that routes agent actions through
-specific handlers and evaluates them against formal task metrics.
+CalendarEnv is a thin orchestrator that delegates to:
+  CalendarBuilder     — weekly calendar construction and obstacle seeding
+  ObservationBuilder  — agent-visible metadata (free slots, dep graph)
+  RewardCalculator    — five independent reward signals
+  ActionValidator     — schema and dependency validation
+  CommandHandlerFactory + handlers — Strategy pattern for command execution
 """
 
-from openenv.core.env_server.interfaces import Environment
-from typing import Tuple, List, Optional, Any
-from datetime import datetime, timedelta
-from abc import ABC, abstractmethod
-import random
+import hashlib
+import logging
 import uuid
+from typing import Any, Dict, List, Optional
+
+from openenv.core.env_server.interfaces import Environment
 
 try:
-    from ..models import MyCalendarAction, MyCalendarObservation,  MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction, CalendarEvent
+    from ..models import (
+        Calendar,
+        MyCalendarAction,
+        MyCalendarObservation,
+        MyCalendarState,
+        Slot,
+    )
+    from ..task_definitions import (
+        EASY_SPEC,
+        FULL_DEPENDENCY_GRAPH,
+        HARD_SPEC,
+        MEDIUM_SPEC,
+        SUPER_HARD_SPEC,
+        THREE_ATTENDEES,
+        TaskDifficulty,
+        TaskSpec,
+    )
+    from .calendar_builder import CalendarBuilder
+    from .handlers import CommandHandlerFactory
+    from .observation_builder import ObservationBuilder
+    from .rewards import RewardCalculator
+    from .slot_utils import SlotUtils
+    from .state import EpisodeState
+    from .validators import ActionValidator
 except ImportError:
-    from models import MyCalendarAction, MyCalendarObservation, MyCalendarState, Calendar, Slot, ExpectedAction, PerformedAction, CalendarEvent
+    from models import (
+        Calendar,
+        MyCalendarAction,
+        MyCalendarObservation,
+        MyCalendarState,
+        Slot,
+    )
+    from task_definitions import (
+        EASY_SPEC,
+        FULL_DEPENDENCY_GRAPH,
+        HARD_SPEC,
+        MEDIUM_SPEC,
+        SUPER_HARD_SPEC,
+        THREE_ATTENDEES,
+        TaskDifficulty,
+        TaskSpec,
+    )
+    from server.calendar_builder import CalendarBuilder
+    from server.handlers import CommandHandlerFactory
+    from server.observation_builder import ObservationBuilder
+    from server.rewards import RewardCalculator
+    from server.slot_utils import SlotUtils
+    from server.state import EpisodeState
+    from server.validators import ActionValidator
 
-try:
-    from task_definitions import get_task_by_level
-except ImportError:
-    from ..task_definitions import get_task_by_level
+log = logging.getLogger(__name__)
 
-try:
-    from server.grader import Grader
-except ImportError:
-    from .grader import Grader
-
-
-# ---------------- ACTION HANDLERS (Strategy Pattern) ----------------
-class ActionHandler(ABC):
-    """Abstract base class for handling different calendar actions."""
-
-    def __init__(self, calendar: Calendar):
-        self.calendar = calendar
-
-    @abstractmethod
-    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
-        """Execute the action and return (reward, message)."""
-        pass
-
-    # Helper methods moved from environment
-    def _parse_time(self, t: Any) -> datetime:
-        if isinstance(t, datetime):
-            return t
-        if isinstance(t, str):
-            return datetime.fromisoformat(t)
-        return t
-
-    def _is_same_time(self, t1: Any, t2: Any) -> bool:
-        """Check if two times are within 60 seconds of each other."""
-        if t1 is None or t2 is None:
-            return t1 == t2
-        dt1 = self._parse_time(t1)
-        dt2 = self._parse_time(t2)
-        return abs((dt1 - dt2).total_seconds()) < 60
-
-    def _is_slot_available(self, slot: Slot) -> bool:
-        """Check if a slot is available (no event assigned)."""
-        for cal_slot in self.calendar.slots:
-            if self._is_same_time(cal_slot.start_time, slot.start_time) and self._is_same_time(cal_slot.end_time, slot.end_time):
-                return cal_slot.event is None
-        return False
-
-    def _update_slot(self, slot: Slot):
-        """Update the calendar slot with the given slot."""
-        for cal_slot in self.calendar.slots:
-            if self._is_same_time(cal_slot.start_time, slot.start_time) and self._is_same_time(cal_slot.end_time, slot.end_time):
-                cal_slot.event = slot.event
-                break
-
-    def _find_slot_by_event_id(self, event_id: str) -> Optional[Slot]:
-        """Find the slot containing the event with the given ID."""
-        for slot in self.calendar.slots:
-            if slot.event and slot.event.event_id == event_id:
-                return slot
-        return None
-
-    def _find_first_available_slot(self) -> Optional[Slot]:
-        """Find the first available slot (no event)."""
-        for slot in self.calendar.slots:
-            if slot.event is None:
-                return slot
-        return None
-
-
-class AddEventHandler(ActionHandler):
-    """Handles adding events to the calendar."""
-
-    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
-        # Duplicate event IDs should be explicitly penalized.
-        if expected.event_id and self._find_slot_by_event_id(expected.event_id):
-            return 0.0, "Duplicate event id"
-
-        slot_available = self._is_slot_available(expected.slot)
-
-        if not slot_available:
-            return 0.0, "Time slot already occupied"
-        
-        # Full success: both slot available and operation succeeded
-        if slot_available and performed.success:
-            event_slot = performed.slot or expected.slot
-            if event_slot and event_slot.event is None:
-                event_id = performed.event_id or expected.event_id or "event"
-                title = None
-                if performed.slot and performed.slot.event and performed.slot.event.title:
-                    title = performed.slot.event.title
-                elif expected.slot and expected.slot.event and expected.slot.event.title:
-                    title = expected.slot.event.title
-                else:
-                    title = expected.event_id or performed.event_id or "event"
-                event_slot.event = CalendarEvent(event_id=event_id, title=title)
-            self._update_slot(event_slot)
-            return 0.5, "Event added successfully"
-        
-        # Partial credit: correct slot identified but operation failed
-        if slot_available and not performed.success:
-            return 0.15, "Event not added (slot identified but execution failed)"
-
-
-class DeleteEventHandler(ActionHandler):
-    """Handles deleting events from the calendar."""
-
-    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
-        slot = self._find_slot_by_event_id(expected.event_id)
-        
-        # Full success: event found and deleted successfully
-        if slot and performed.success:
-            slot.event = None
-            return 0.5, "Event deleted successfully"
-        
-        # Partial credit: event found but deletion failed
-        if slot and not performed.success:
-            return 0.15, "Event found but deletion failed"
-        
-        # Wrong logic: deletion succeeded but event not found
-        if not slot and performed.success:
-            return 0.0, "Event deletion succeeded but event not found"
-        
-        # Complete failure: event not found and deletion failed
-        return 0.0, "Failed to delete event (not found)"
-
-
-class MoveEventHandler(ActionHandler):
-    """Handles moving events between slots."""
-
-    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
-        current_slot = self._find_slot_by_event_id(expected.event_id)
-        target_available = performed.slot is not None and self._is_slot_available(performed.slot)
-        
-        # Full success: current slot found, target available, and move successful
-        if performed.success and current_slot and target_available:
-            performed.slot.event = current_slot.event
-            self._update_slot(performed.slot)
-            current_slot.event = None
-            return 0.5, "Event moved successfully"
-        
-        # Partial credit: current slot and target valid but move failed
-        if not performed.success and current_slot and target_available:
-            return 0.2, "Event and target slot valid but move execution failed"
-
-        # Partial credit: current slot found but move failed
-        if not performed.success and current_slot:
-            return 0.15, "Current event located but move failed"
-        
-        # Wrong logic: move succeeded but prerequisites not met
-        if performed.success and (not current_slot or not target_available):
-            return 0.0, "Move succeeded but event or target slot invalid"
-        
-        # Complete failure
-        return 0.0, "Failed to move event"
-
-
-class SearchSlotHandler(ActionHandler):
-    """Handles searching for available slots."""
-
-    def execute(self, expected: ExpectedAction, performed: PerformedAction) -> Tuple[float, str]:
-        available_slot = self._find_first_available_slot()
-        
-        # Full success: found available slot and returned correct one
-        if performed.success and performed.slot and available_slot and self._is_same_time(performed.slot.start_time, available_slot.start_time):
-            return 0.5, "Slot found correctly"
-        
-        # Partial credit: search succeeded but returned wrong slot
-        if performed.success and performed.slot and available_slot and not self._is_same_time(performed.slot.start_time, available_slot.start_time):
-            return 0.1, "Search succeeded but returned wrong slot"
-        
-        # Partial credit: search succeeded but returned something when slots available
-        if performed.success and performed.slot is None and available_slot:
-            return 0.05, "No slot returned but slots are available"
-        
-        # Wrong logic: search succeeded but no available slots exist (shouldn't happen)
-        if performed.success and not available_slot:
-            return 0.0, "Slot search succeeded but no slots are available"
-        
-        # Complete failure: search failed
-        return 0.0, "Search failed"
-
-
-# ---------------- COMMAND FACTORY ----------------
-class ActionHandlerFactory:
-    """Factory for creating action handlers based on action type."""
-
-    _handlers = {
-        "add_event": AddEventHandler,
-        "delete_event": DeleteEventHandler,
-        "move_event": MoveEventHandler,
-        "search_slot": SearchSlotHandler,
-    }
-
-    @staticmethod
-    def get_handler(action_type: str, calendar: Calendar) -> ActionHandler:
-        """Return the handler instance for the requested action type.
-
-        Args:
-            action_type: The command name for the calendar action.
-            calendar: The current calendar state to operate on.
-
-        Returns:
-            An ActionHandler instance for the requested action.
-
-        Raises:
-            ValueError: If the action type is not recognized.
-        """
-        handler_class = ActionHandlerFactory._handlers.get(action_type)
-        if not handler_class:
-            raise ValueError(f"Unknown action type: {action_type}")
-        return handler_class(calendar)
+_SPEC_MAP: Dict[TaskDifficulty, TaskSpec] = {
+    TaskDifficulty.EASY: EASY_SPEC,
+    TaskDifficulty.MEDIUM: MEDIUM_SPEC,
+    TaskDifficulty.HARD: HARD_SPEC,
+    TaskDifficulty.SUPER_HARD: SUPER_HARD_SPEC,
+}
 
 
 class CalendarEnv(Environment):
-    """A simple smart calendar environment for OpenEnv-style agents.
+    """Round-2 Smart Calendar RL environment.
 
-    The environment maintains a daily calendar, tracks episode and step state,
-    and routes agent actions through a strategy-based action handler.
+    Orchestrates a five-day weekly scheduling task with multi-attendee
+    personas, a meeting dependency graph, and five independent reward signals.
+
+    The raw UTC slot matrix is never exposed to the agent — only
+    local-time free-slot strings and dependency status labels are surfaced.
     """
 
-    def __init__(self):
-        self.current_task_id = str(uuid.uuid4())
-        self.steps = 0
-        self.failed_steps = 0
-        self.max_steps = 10
-        self.task_type = "medium"
-        
-        # Load formal task definition
-        self.task_def = get_task_by_level(self.task_type)
-        self.task_objective = self.task_def.objective
-        self.task_goal = self.task_def.goal
-        self.target_meetings = self.task_def.metrics.target_meetings
+    def __init__(self) -> None:
+        """Initialise instance variables; a full episode begins with reset()."""
+        self._state: Optional[EpisodeState] = None
+        self._action_history: List[str] = []
+        self._episode_id: str = str(uuid.uuid4())
 
-        self.calendar = self._build_daily_calendar()
-        self.previous_action_signature = ""
+    # ── public interface ──────────────────────────────────────────────────
 
-    # ---------------- RESET ----------------
-    def reset(self) -> MyCalendarObservation:
-        """Reset the environment to a fresh daily calendar and new task ID.
-
-        Returns:
-            A MyCalendarObservation indicating the reset state.
-        """
-        self.calendar = self._build_daily_calendar()
-        self.current_task_id = str(uuid.uuid4())
-        self.steps = 0
-        self.failed_steps = 0
-        self.previous_action_signature = ""
-        self._assign_task()
-
-        return MyCalendarObservation(
-            message=f"Environment reset (Task {self.current_task_id}) | Objective: {self.task_objective}",
-            reward=0.0,
-            done=False
-        )
-
-    # ---------------- STEP ----------------
-    def step(self, action: MyCalendarAction) -> MyCalendarObservation:
-        """Advance the environment by applying the agent's calendar action.
-
-        The action is routed through the appropriate handler based on the
-        expected command, and the calendar state is updated in place.
+    def reset(self, task: TaskDifficulty = TaskDifficulty.EASY) -> MyCalendarObservation:
+        """Reset to a fresh episode for the given difficulty.
 
         Args:
-            action: The incoming MyCalendarAction from the agent.
+            task: Curriculum difficulty level (EASY / MEDIUM / HARD).
+                  Accepts TaskDifficulty enum or its string value (e.g. "medium").
 
         Returns:
-            A MyCalendarObservation with reward, done status, and message.
+            Initial observation with task description and full visible state.
         """
-        self.steps += 1
+        if isinstance(task, str):
+            task = TaskDifficulty(task)
+        spec = _SPEC_MAP[task]
+        week_dates = CalendarBuilder.get_week_dates()
+        week = CalendarBuilder.build_weekly(week_dates)
+        CalendarBuilder.preseed_obstacles(week, task)
 
-        action_signature = action.model_dump_json()
+        attendee_map = {a.name: a for a in THREE_ATTENDEES}
+        attendees = [attendee_map[n] for n in spec.attendee_names if n in attendee_map]
 
-        expected = action.expected_action
-        performed = action.performed_action
+        self._state = EpisodeState(spec=spec, week=week, attendees=attendees)
+        self._action_history = []
+        self._episode_id = str(uuid.uuid4())
 
-        # Get the appropriate handler and execute
-        try:
-            handler = ActionHandlerFactory.get_handler(expected.command, self.calendar)
-            base_reward, message = handler.execute(expected, performed)
-        except ValueError as e:
-            base_reward, message = 0.0, str(e)
-
-        # Reward shaping: strictly 0.0-1.0 range based on Phase 2 requirements.
-        # base_reward from handlers is [0.0, 0.5].
-        # score from Grader is [0.0, 1.0].
-        score = self.compute_score()
-        reward = base_reward + (score * 0.5)
-
-        if action_signature == self.previous_action_signature:
-            reward *= 0.5 # Penalize repeat actions without going negative
-
-        reward = max(0.0, min(1.0, float(reward)))
-
-        if reward < 0.1:
-            self.failed_steps += 1
-
-        self.previous_action_signature = action_signature
-
-        # Episode ends when max steps are reached, the goal is achieved, or too many failures occur.
-        scheduled = self._count_scheduled_meetings()
-        done = self.steps >= self.max_steps or scheduled >= self.target_meetings or self.failed_steps >= 3
-
-        return MyCalendarObservation(
-            message=message,
-            reward=reward,
-            done=done,
-            metadata={"score": score}
+        objective = (
+            f"Schedule {len(spec.meetings)} meeting(s) in dependency order: "
+            + " → ".join(spec.meetings)
+            + ". Respect all dependencies and attendee preferred hours."
         )
 
-    # ---------------- DAILY CALENDAR BUILDER ----------------
-    def _build_daily_calendar(self) -> Calendar:
-        """Create an empty calendar with 24 hourly slots for the current day."""
-        start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        slots: List[Slot] = []
-        for hour in range(24):
-            slot_start = start_of_day + timedelta(hours=hour)
-            slot_end = slot_start + timedelta(hours=1)
-            slots.append(Slot(start_time=slot_start.isoformat(), end_time=slot_end.isoformat()))
-        return Calendar(slots=slots)
+        return MyCalendarObservation(
+            message=objective,
+            reward=0.0,
+            done=False,
+            metadata={
+                "free_slots": ObservationBuilder.free_slots(week, spec, attendees),
+                "attendees": [
+                    {
+                        "name": a.name,
+                        "timezone": a.timezone,
+                        "preferred_hours": (
+                            f"{a.preferred_start_hour}am-{a.preferred_end_hour}pm local"
+                        ),
+                    }
+                    for a in attendees
+                ],
+                "scheduled_meetings": [],
+                "dependency_graph": ObservationBuilder.dependency_graph(spec, []),
+                "task_objective": objective,
+                "target_meetings": len(spec.meetings),
+                "max_steps": spec.max_steps,
+                "steps_remaining": spec.max_steps,
+                "episode_id": self._episode_id,
+            },
+        )
 
-    def _count_scheduled_meetings(self) -> int:
-        """Count how many slots currently contain an event."""
-        return sum(1 for slot in self.calendar.slots if slot.event is not None)
+    def step(self, action: MyCalendarAction) -> MyCalendarObservation:
+        """Apply one agent action and return the updated observation.
 
-    def _build_free_slot_labels(self) -> List[str]:
-        """Build compact labels for free slots to help prompting."""
-        free_slots: List[str] = []
-        for slot in self.calendar.slots:
-            if slot.event is None:
-                st = datetime.fromisoformat(slot.start_time).strftime('%H:%M') if isinstance(slot.start_time, str) else slot.start_time.strftime('%H:%M')
-                en = datetime.fromisoformat(slot.end_time).strftime('%H:%M') if isinstance(slot.end_time, str) else slot.end_time.strftime('%H:%M')
-                free_slots.append(f"{st}-{en}")
-        return free_slots
+        Processing order:
+          1. Hard step-limit guard
+          2. Schema validation (ActionValidator)
+          3. Duplicate detection (SHA-256 fingerprint)
+          4. Command dispatch (CommandHandlerFactory → handler.execute)
+          5. Update higher-level state (scheduled_meeting_ids, details)
+          6. Compute five reward signals (RewardCalculator)
+          7. Build and return observation
 
-    def _assign_task(self) -> None:
-        """Assign one of the explicit evaluation tasks for this episode."""
-        import os
-        task_name = os.getenv("TASK_NAME", "")
-        if "easy" in task_name:
-            self.task_type = "easy"
-        elif "medium" in task_name:
-            self.task_type = "medium"
-        elif "hard" in task_name:
-            self.task_type = "hard"
+        All five reward signals live in metadata only; the top-level
+        reward field is always 0.0 (signals are never composited).
+
+        Args:
+            action: Agent's calendar action.
+
+        Returns:
+            Observation with five reward signals and updated visible state.
+        """
+        assert self._state is not None, "call reset() before step()"
+        state = self._state
+        state.step_count += 1
+
+        # 1. Hard step-limit
+        if state.step_count > state.spec.max_steps:
+            return self._build_obs(
+                message="Episode terminated: max steps exceeded.",
+                action_valid=False,
+                rejection_reason="max_steps_exceeded",
+                rewards=RewardCalculator.zero(),
+                state=state,
+                done=True,
+            )
+
+        # 2. Schema validation
+        valid, reason = ActionValidator.schema(action)
+        if not valid:
+            log.warning("schema validation failed: %s", reason)
+            return self._build_obs(
+                message=f"Invalid action: {reason}",
+                action_valid=False,
+                rejection_reason=reason,
+                rewards=RewardCalculator.zero(),
+                state=state,
+                done=False,
+            )
+
+        # 3. Duplicate detection
+        fingerprint = self._fingerprint(action)
+        if fingerprint in self._action_history:
+            log.warning("duplicate action: %s", action.expected_action.command)
+            return self._build_obs(
+                message="Duplicate action — no reward.",
+                action_valid=False,
+                rejection_reason="duplicate_action",
+                rewards=RewardCalculator.zero(),
+                state=state,
+                done=False,
+            )
+        self._action_history.append(fingerprint)
+
+        # 4. Dispatch to strategy handler
+        handler = CommandHandlerFactory.get(action.expected_action.command)
+        result = handler.execute(action, state)
+
+        if not result.action_valid:
+            rewards = RewardCalculator.zero()
+            # Surface the specific violated signal for informative training signal
+            if result.rejection_reason == "slot_conflict":
+                rewards["reward_conflict_free"] = 0.0
+            if result.rejection_reason and "dependency" in result.rejection_reason:
+                rewards["reward_dependency_respected"] = 0.0
+            return self._build_obs(
+                message=result.message,
+                action_valid=False,
+                rejection_reason=result.rejection_reason,
+                rewards=rewards,
+                state=state,
+                done=False,
+            )
+
+        # 5. Update higher-level state (handlers only mutate slots)
+        command = action.expected_action.command
+        is_search = command == "search_slot"
+        is_delete = command == "delete_event"
+        if not is_search and result.meeting_id:
+            if is_delete:
+                # delete_event: unregister the meeting
+                state.scheduled_meeting_ids = [
+                    m for m in state.scheduled_meeting_ids if m != result.meeting_id
+                ]
+                state.scheduled_details = [
+                    d for d in state.scheduled_details if d["meeting_id"] != result.meeting_id
+                ]
+            elif result.meeting_id not in state.scheduled_meeting_ids:
+                # add_event: register the new booking
+                state.scheduled_meeting_ids.append(result.meeting_id)
+                state.scheduled_details.append(
+                    {
+                        "meeting_id": result.meeting_id,
+                        "day": result.day,
+                        "utc_start": f"{result.utc_hour:02d}:00",
+                        "utc_end": f"{(result.utc_hour or 0) + 1:02d}:00",
+                    }
+                )
+            else:
+                # move_event: update existing detail in place
+                for detail in state.scheduled_details:
+                    if detail["meeting_id"] == result.meeting_id:
+                        detail["day"] = result.day
+                        detail["utc_start"] = f"{result.utc_hour:02d}:00"
+                        detail["utc_end"] = f"{(result.utc_hour or 0) + 1:02d}:00"
+                        break
+
+        # 6. Compute rewards
+        if is_search:
+            rewards = {
+                "reward_conflict_free": RewardCalculator.conflict_free(state.week),
+                "reward_dependency_respected": 0.3,
+                "reward_attendee_satisfied": 0.0,
+                "reward_efficiency": RewardCalculator.efficiency(
+                    state.step_count, state.spec.max_steps
+                ),
+                "reward_objective_progress": RewardCalculator.objective_progress(state),
+            }
+        elif is_delete:
+            # Deletion is corrective: no meeting scheduled, no dependency satisfied
+            rewards = {
+                "reward_conflict_free": RewardCalculator.conflict_free(state.week),
+                "reward_dependency_respected": 0.0,
+                "reward_attendee_satisfied": 0.0,
+                "reward_efficiency": RewardCalculator.efficiency(
+                    state.step_count, state.spec.max_steps
+                ),
+                "reward_objective_progress": RewardCalculator.objective_progress(state),
+            }
         else:
-            self.task_type = random.choice(["easy", "medium", "hard"])
-            
-        self.task_def = get_task_by_level(self.task_type)
-        self.target_meetings = self.task_def.metrics.target_meetings
-        self.task_objective = self.task_def.objective
-        self.task_goal = self.task_def.goal
+            rewards = RewardCalculator.all_rewards(
+                meeting_id=result.meeting_id or "",
+                utc_hour=result.utc_hour or 0,
+                state=state,
+            )
 
-    def compute_score(self) -> float:
-        """Compute deterministic task score in [0, 1] using the Grader class."""
-        return Grader.compute_score(self.calendar, self.task_def)
+        done = (
+            len(state.scheduled_meeting_ids) >= len(state.spec.meetings)
+            or state.step_count >= state.spec.max_steps
+        )
 
-    def _task_reward_adjustment(self) -> float:
-        """Return task-specific reward adjustment based on Grader."""
-        # Calculate current score representation as part of continuous reward shaping
-        current_score = self.compute_score()
-        return max(0.0, current_score * 0.5)
+        # 7. Build observation
+        return self._build_obs(
+            message=result.message,
+            action_valid=True,
+            rejection_reason=None,
+            rewards=rewards,
+            state=state,
+            done=done,
+        )
 
-    # ---------------- STATE ----------------
+    # ── private helpers ───────────────────────────────────────────────────
+
+    def _build_obs(
+        self,
+        message: str,
+        action_valid: bool,
+        rejection_reason: Optional[str],
+        rewards: Dict[str, Any],
+        state: EpisodeState,
+        done: bool,
+    ) -> MyCalendarObservation:
+        """Assemble the full observation returned to the agent.
+
+        Guarantees hard termination: overrides done=True whenever
+        step_count >= max_steps regardless of the calling path.
+
+        Args:
+            message: Human-readable outcome.
+            action_valid: Whether the action was accepted.
+            rejection_reason: Reason string if rejected, else None.
+            rewards: Five-signal reward dict.
+            state: Current episode state.
+            done: Episode-done flag from the caller.
+
+        Returns:
+            MyCalendarObservation with metadata containing all signals.
+        """
+        effective_done = done or state.step_count >= state.spec.max_steps
+        return MyCalendarObservation(
+            message=message,
+            reward=0.0,
+            done=effective_done,
+            metadata={
+                **rewards,
+                "action_valid": action_valid,
+                "rejection_reason": rejection_reason,
+                "free_slots": ObservationBuilder.free_slots(
+                    state.week, state.spec, state.attendees
+                ),
+                "scheduled_meetings": list(state.scheduled_details),
+                "dependency_graph": ObservationBuilder.dependency_graph(
+                    state.spec, state.scheduled_meeting_ids
+                ),
+                "steps_remaining": max(0, state.spec.max_steps - state.step_count),
+                "target_meetings": len(state.spec.meetings),
+            },
+        )
+
+    @staticmethod
+    def _fingerprint(action: MyCalendarAction) -> str:
+        """SHA-256 fingerprint for duplicate-action detection.
+
+        Args:
+            action: Agent action to fingerprint.
+
+        Returns:
+            Hex digest string.
+        """
+        return hashlib.sha256(action.model_dump_json().encode()).hexdigest()
+
+    # ── state property ────────────────────────────────────────────────────
+
     @property
     def state(self) -> MyCalendarState:
-        """Return the current environment state as a MyCalendarState object."""
-        scheduled = self._count_scheduled_meetings()
-        progress = min(1.0, scheduled / self.target_meetings) if self.target_meetings > 0 else 0.0
-        events = [slot.event.event_id for slot in self.calendar.slots if slot.event is not None and slot.event.event_id]
+        """Current environment state as a MyCalendarState snapshot.
+
+        Returns:
+            MyCalendarState with all fields populated.
+
+        Raises:
+            AssertionError: If reset() has not been called.
+        """
+        assert self._state is not None, "call reset() before accessing state"
+        s = self._state
+
+        all_slots: List[Slot] = [
+            slot
+            for day_name in s.spec.days
+            for slot in (
+                s.week.days[day_name].slots if day_name in s.week.days else []
+            )
+        ]
+        flat_free: List[str] = [
+            (
+                f"{day_name} "
+                f"{SlotUtils.parse_utc(slot.start_time).strftime('%H:%M')}-"
+                f"{SlotUtils.parse_utc(slot.end_time).strftime('%H:%M')} UTC"
+            )
+            for day_name in s.spec.days
+            for slot in (
+                s.week.days[day_name].slots if day_name in s.week.days else []
+            )
+            if slot.event is None
+        ]
+
         return MyCalendarState(
-            episode_id=self.current_task_id,
-            step_count=self.steps,
-            calendar=self.calendar,
-            task_objective=self.task_objective,
-            task_goal=self.task_goal,
-            events=events,
-            free_slots=self._build_free_slot_labels(),
-            target_meetings=self.target_meetings,
-            scheduled_meetings=scheduled,
-            objective_progress=progress,
-            failed_steps=self.failed_steps,
+            episode_id=self._episode_id,
+            step_count=s.step_count,
+            calendar=Calendar(slots=all_slots),
+            task_objective=(
+                f"Schedule {len(s.spec.meetings)} meeting(s): "
+                + " → ".join(s.spec.meetings)
+            ),
+            task_goal=f"schedule {len(s.spec.meetings)} meetings",
+            events=list(s.scheduled_meeting_ids),
+            free_slots=flat_free,
+            target_meetings=len(s.spec.meetings),
+            scheduled_meetings=len(s.scheduled_meeting_ids),
+            objective_progress=RewardCalculator.objective_progress(s),
+            failed_steps=0,
+            week=s.week,
+            attendees=list(s.attendees),
+            cascade_conflicts=[],
+            attendee_satisfaction=0.0,
+            dependency_graph={
+                mid: FULL_DEPENDENCY_GRAPH.get(mid, {}).get("deps", [])
+                for mid in s.spec.meetings
+            },
+            scheduled_meeting_ids=list(s.scheduled_meeting_ids),
         )
