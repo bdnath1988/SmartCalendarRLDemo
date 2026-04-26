@@ -345,9 +345,15 @@ class CalendarEnv(Environment):
             MyCalendarObservation with metadata containing all signals.
         """
         effective_done = done or state.step_count >= state.spec.max_steps
+        # Expose objective_progress as the top-level scalar so GRPO sees non-zero
+        # advantages. The five named signals remain separate in metadata.
+        # Terminal +1 bonus rewards completing the full schedule.
+        grpo_reward = float(rewards.get("reward_objective_progress", 0.0))
+        if effective_done and grpo_reward >= 1.0:
+            grpo_reward += 1.0
         return MyCalendarObservation(
             message=message,
-            reward=0.0,
+            reward=grpo_reward,
             done=effective_done,
             metadata={
                 **rewards,
