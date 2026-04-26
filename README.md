@@ -5,7 +5,7 @@
 [![HuggingFace Space](https://img.shields.io/badge/🤗%20Space-SmartCalendarRLDemo-yellow)](https://huggingface.co/spaces/kohantika/SmartCalendarRLDemo)
 [![Trained Model](https://img.shields.io/badge/🤗%20Model-smart--calendar--qwen--grpo-orange)](https://huggingface.co/kohantika/smart-calendar-qwen-grpo)
 [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1mVmrGGahOBqqT3g3VCGmPYKu8wwZDjg3?usp=sharing)
-
+[![YouTube](https://img.shields.io/badge/YouTube-Demo%20Video-red?logo=youtube)](https://youtu.be/bdGxckCcu10)
 ---
 
 ## 🎯 The Problem
@@ -202,8 +202,7 @@ SmartCalendarRLDemo/
 | 🤗 Environment on HF Spaces | https://huggingface.co/spaces/kohantika/SmartCalendarRLDemo |
 | 🤗 Trained Model |https://huggingface.co/kohantika/smart-calendar-qwen-grpo |
 | 📓 Training Colab Notebook | https://colab.research.google.com/drive/1mVmrGGahOBqqT3g3VCGmPYKu8wwZDjg3?usp=sharing |
-| 📝 HuggingFace Blog Post | <!-- ADD BLOG LINK --> |
-| 🎥 Demo Video | <!-- ADD VIDEO LINK --> |
+| 🎥 Demo Video | https://youtu.be/bdGxckCcu10 |
 | 💻 GitHub Repository | https://github.com/bdnath1988/SmartCalendarRLDemo |
 
 ---
