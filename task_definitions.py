@@ -207,17 +207,16 @@ SUPER_HARD_SPEC = TaskSpec(
     days=["monday", "tuesday", "wednesday", "thursday", "friday"],
     attendee_names=["Alice", "Bob", "Carol"],
     max_steps=40,
-    reward_mode="sparse",
-    research_mode=True,
+    reward_mode="dense",
+    research_mode=False,
 )
 
 
 # ---- Curricula ----
 
 HACKATHON_CURRICULUM: List[TaskDifficulty] = [
-    TaskDifficulty.EASY,
-    TaskDifficulty.MEDIUM,
     TaskDifficulty.HARD,
+    TaskDifficulty.SUPER_HARD,
 ]
 
 FULL_CURRICULUM: List[TaskDifficulty] = [
