@@ -1,92 +1,209 @@
----
-title: Smart Calendar Agent Environment
-emoji: 📅
-colorFrom: green
-colorTo: blue
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
+# 📅 SmartCalendar RL — AI Executive Assistant Environment
+
+> **Meta OpenEnv Hackathon India 2026** · Theme 3.2: Personalized Tasks + Theme 2: Long-Horizon Planning
+
+[![HuggingFace Space](https://img.shields.io/badge/🤗%20Space-SmartCalendarRLDemo-yellow)](https://huggingface.co/spaces/kohantika/SmartCalendarRLDemo)
+[![Trained Model](https://img.shields.io/badge/🤗%20Model-smart--calendar--qwen--grpo-orange)](https://huggingface.co/kohantika/smart-calendar-qwen-grpo)
+[![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1mVmrGGahOBqqT3g3VCGmPYKu8wwZDjg3?usp=sharing)
+[![YouTube](https://img.shields.io/badge/YouTube-Demo%20Video-red?logo=youtube)](https://youtu.be/bdGxckCcu10)
 ---
 
-# Smart Calendar Agent Environment
+## 🎯 The Problem
 
-A real-world task simulation environment designed to evaluate an agent's ability to schedule meetings, manage time slots, and maneuver calendar events efficiently and reliably.
+LLMs are good at answering questions. They are poor at **acting** inside a calendar — understanding which slots are free, respecting scheduling constraints, recovering from failed actions, and making progress across multiple steps toward a goal.
 
-## Motivation
-Tool-use capabilities for LLMs must be tested on authentic, everyday tasks rather than generic toy datasets. Calendar triage and meeting scheduling are among the most standard workflow automation bottlenecks. This environment simulates these constraints by introducing state tracking, time availability parsing, collision detection, and reward shaping to encourage strategic searching prior to committing to an action.
+Standard instruction tuning cannot fix this because it teaches the model what to say, not how to act. Reinforcement Learning is required: the model must take actions, receive feedback from the environment, and update its behaviour based on what worked and what did not.
 
-## Tasks and Difficulty
-The environment defines 3 standard tasks, assigned dynamically by difficulty (graders evaluate performance between `0.0` and `1.0`):
-
-1. **Easy:** Schedule exactly 1 meeting. (Target: 1)
-2. **Medium:** Schedule 3 meetings efficiently without overlapping any existing events. (Target: 3)
-3. **Hard:** Schedule 5 meetings while mandating a minimum of 1-hour gaps between all meetings. (Target: 5)
-
-## Formal Specifications
-
-### 1. State Space ($\mathcal{S}$)
-The true environment state $\mathcal{S}$ is formally defined as:
-$s_t = \langle \mathcal{C}, M_{target}, M_{current}, \tau, \Phi \rangle$
-- $\mathcal{C}$: The calendar array containing 24 chronological slots, each $c_i \in \{0, 1\}$.
-- $M_{target}$: Target number of meetings required by the task $T \in \{1, 3, 5\}$.
-- $M_{current}$: Meetings currently successfully scheduled.
-- $\tau$: Timestep count $\tau \in [0, 10]$.
-- $\Phi$: Task-specific rules (e.g., minimum 1-hour spacing $\phi_{gap} \ge 1$).
-
-### 2. Action Space ($\mathcal{A}$)
-The agent selects an action $a_t \in \mathcal{A}$ parameterized as a tuple:
-$a_t = \langle C, e, t_{start}, t_{end} \rangle$
-Where the command $C \in \{add\_event, move\_event, delete\_event, search\_slot\}$, $e$ is an event ID, and $t$ represents timestamps.
-
-### 3. Reward Function ($\mathcal{R}$)
-$r_t = \mathcal{R}(s_t, a_t) \rightarrow [0.0, 1.0]$
-- The reward is a composite of the immediate action success (50%) and total objective progress (50%) as measured by the deterministic Grader.
-- **Valid operation** (Successful add/move/delete): Incremental reward up to $0.5$.
-- **Objective Progress**: Progressive bonus up to $0.5$ based on the total task score.
-- **Invalid/Redundant operations**: $0.0$ (Zero reward).
+This environment trains that capability from scratch using GRPO — no human-labelled data, no correct-answer demonstrations. Just reward signals from the smart calendar RL environment itself.
 
 ---
 
-## 🛑 Reward Leakage & Privileged Information
-To maintain evaluation integrity and prevent **Reward Leakage**, there is a strict separation between what the Agent observes and what the Grader knows.
+## 🏗️ Environment Design
 
-**Agent Observables (Passed in prompt):**
-- $M_{target}$ (Objective count) and current $M_{current}$ (Count of scheduled meetings).
-- A textual list of currently `free_slots` (e.g., "09:00-10:00").
-- IDs of existing scheduled `events`.
-- The explicit task goal and objective strings.
-- **Filtering:** The agent **never** sees the raw calendar matrix or the internal timestamp strings of occupied slots unless it has successfully scheduled them itself.
+The SmartCalendar environment implements the full OpenEnv specification: a Dockerised FastAPI server with typed `reset()`, `step()`, and `state()` endpoints, accessed by a Python HTTP client.
 
-**Privileged Grader Information (Hidden from Agent):**
-The external `Grader` class has direct access to the raw Python `Calendar` object matrix and the `task_definitions.py` metrics. It independently computes:
-- **Exact Overlap Matrix:** Checks for sub-minute overlaps that might be obscured in the prompt's hourly labels.
-- **Spacing Bound Violations:** Mathematically verifies that gaps (e.g., 1.0 hour) are strictly maintained.
-- **Deterministic Score:** Computes $\Sigma \in [0,1]$ which is completely decoupled from the stepwise RL reward $r_t$. The agent does not see its current "Score" during the episode, only the "Reward" for the immediate action.
+### What the Agent Observes
 
-## Setup instructions
+At each step the agent receives a natural language prompt containing:
 
-### 1. Build the Docker Image
-The environment server fully executes inside a containerized sandbox. Recompiling the Dockerfile applies configuration updates locally:
+- Current objective and progress (`scheduled / target` meetings)
+- List of free time slots in `HH:MM-HH:MM` format
+- IDs of already-scheduled events
+- Dependency graph showing which meetings are available vs locked
+- Available commands and usage examples
+
+The agent **never** sees the raw calendar matrix or internal slot indices. It must reason from the description alone.
+
+### What the Agent Can Do
+
+| Command | Description |
+|---|---|
+| `add_event` | Book a meeting at a specified slot |
+| `search_slot` | Query which slots are free before committing |
+| `move_event` | Reschedule an existing meeting |
+| `delete_event` | Remove a meeting from the calendar |
+
+All actions are submitted as JSON. Invalid JSON, impossible times, and occupied slots are rejected with a `rejection_reason` in the observation metadata.
+
+### Task Difficulty Tiers
+
+| Tier | Meetings | Days | Constraints | Max Steps | Training |
+|---|---|---|---|---|---|
+| Easy | 1 | Monday only | None | 10 | ✅ Yes |
+| Medium | 3 | Mon–Wed | No overlaps | 20 | ✅ Yes |
+| Hard | 7 | Mon–Fri | 1-hour gaps, dependency order | 30 | ✅ Yes |
+| Super Hard | 11 | Mon–Fri | Full DAG, sparse reward | 40 | 🔬 Research |
+
+The **Hard** task requires the agent to schedule 7 meetings in correct dependency order across a full working week with mandatory 1-hour gaps between all meetings. This is the primary benchmark.
+
+### Reward Design (5 Independent Signals)
+
+Rather than a single composite score, the environment returns five separate reward signals per step — following the composable rubric pattern:
+
+| Signal | Measures | Range |
+|---|---|---|
+| `reward_objective_progress` | Meetings scheduled / target | 0.0 – 1.0 |
+| `reward_valid_json` | Model output is parseable JSON | −1.0 – 0.3 |
+| `reward_correct_time` | Times are valid and within working hours | −0.3 – 1.0 |
+| `action_valid` | Action was accepted by the environment | bool |
+| `rejection_reason` | Why an action was rejected (for debugging) | string / null |
+
+The GRPO training loop uses `reward_valid_json`, `reward_correct_time`, and `reward_objective_progress` as three independent reward functions, creating multi-dimensional feedback that prevents reward hacking on any single signal.
+
+---
+
+## 🤖 Training
+
+### Stack
+
+| Component | Choice |
+|---|---|
+| Base model | `Qwen/Qwen2.5-0.5B-Instruct` |
+| RL algorithm | GRPO (Group Relative Policy Optimisation) |
+| Training library | HuggingFace TRL |
+| Environment | SmartCalendarRLDemo on HF Spaces |
+| Training platform | Google Colab (T4 GPU) |
+
+### Why GRPO, Not SFT
+
+Supervised Fine-Tuning requires correct example answers. For calendar scheduling, generating correct examples programmatically would mean the model just memorises a rule-based heuristic rather than learning to reason. GRPO instead samples multiple outputs from the model, scores them against the environment's reward signals, and updates weights based on which outputs were better — no labelled data needed.
+
+### Training Configuration
+
+```python
+GRPOConfig(
+    num_train_epochs=1,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=8,
+    learning_rate=5e-6,
+    num_generations=4,      # 4 outputs per prompt, scored and contrasted
+    max_completion_length=150,
+    temperature=0.9,        # ensures output diversity between the 4 samples
+)
+```
+
+Dataset: 150 prompts generated from the live environment across all three training difficulties (80 Easy / 50 Medium / 20 Hard), shuffled randomly.
+
+---
+
+## 📊 Results
+
+### Training Evidence
+
+The following plots were generated from the actual training run. All reward values are logged per step via `TrainerCallback` and saved to `training_history.json`.
+
+![GRPO Training Progress](evidences\images\reward_and_loss_changes_during_training.png)
+
+*Top: Three reward signals during 75 training steps. The green line (correct time logic) rises earliest, showing the model first learns output format. The red dashed line (scheduling success from the environment) rises from step ~30 onward, confirming the environment's reward signal is shaping behaviour. Bottom: Training loss fluctuates around non-zero values throughout, confirming weights were updated at each step.*
+
+### Before vs After GRPO Training
+
+![Base vs Trained Model](evidences\images\base_vs_trained_model_test_comparision.png)
+
+*Top-left: Final objective progress score by difficulty. The trained model achieves 1.00 on Easy (base: 0.00) and 0.14 on Hard (base: 0.00). Top-right: The green shaded region shows improvement from RL training across all difficulty levels. Bottom-left: Invalid actions per episode — the trained model makes significantly fewer rejected actions on Easy tasks. Bottom-right: Step-by-step reward on the Hard task — the trained model briefly achieves non-zero reward at step 1, confirming it has learned to make at least one valid scheduling decision.*
+
+### Key Numbers
+
+| Metric | Base Qwen 0.5B | GRPO Trained | Change |
+|---|---|---|---|
+| Easy — final score | 0.00 | **1.00** | +1.00 |
+| Medium — final score | 0.33 | **0.33** | 0.00 |
+| Hard — final score | 0.00 | **0.14** | +0.14 |
+| Easy — invalid actions | 10 | **1** | −9 |
+
+The Easy task result — from 0.00 to 1.00 — is the clearest evidence of learning. The base model failed completely to schedule even a single meeting. After GRPO training, the model schedules the required meeting correctly every episode.
+
+---
+
+## 🔬 Research Direction: Super Hard Mode
+
+The environment includes a fourth difficulty tier — **Sprint Planning** — featuring an 11-meeting dependency graph across a full sprint week with sparse delayed rewards. The full dependency chain is:
+
+```
+Kickoff → Requirements Review → Backend Design  ┐
+                              → Frontend Design ┘→ Integration → QA Planning → Launch Review
+Daily Standups (Mon–Thu, no dependencies)
+```
+
+This mode is fully implemented in `task_definitions.py` under `TaskDifficulty.SUPER_HARD` with `research_mode=True`. It was deliberately excluded from hackathon training because sparse rewards require longer runs (1000+ steps) to show measurable improvement — beyond what a single Colab session can produce. It represents a clear post-hackathon research direction.
+
+---
+
+## 🚀 Quick Start
+
+### Run the Environment Locally
+
 ```bash
+git clone https://github.com/bdnath1988/SmartCalendarRLDemo
+cd SmartCalendarRLDemo
 docker build -t smart_calendar_agent_env:latest .
+docker run -p 8000:8000 smart_calendar_agent_env:latest
 ```
 
-### 2. Environment Variables
-Add your corresponding LLM API keys via the standard `.env` configuration mapping in your root directory:
-```bash
-MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-API_BASE_URL="https://router.huggingface.co/v1"
-OPENAI_API_KEY="..." # Or HF_TOKEN="..."
-```
+### Test with the Inference Script
 
-### 3. Run Inference
-Use the included OpenEnv baseline script to test the agent using the OpenAI SDK natively:
 ```bash
+cp .env.example .env
+# Add your HF_TOKEN and MODEL_NAME to .env
 python inference.py
 ```
 
-## Baseline Scores
-Testing the baseline with `Qwen/Qwen2.5-72B-Instruct` natively completes the task deterministically, correctly recognizing collision edge cases due to the updated `search_slot` instructions, and efficiently achieves a perfectly reproducible optimal score of `1.000` consistently across Easy, Medium, and Hard workloads.
+### Run the Training Notebook
+
+Open the Colab notebook and run all cells top to bottom. The notebook clones the environment from HuggingFace Spaces, installs dependencies, runs GRPO training, saves reward history, and plots results.
+
+[▶ Open Training Notebook in Colab](https://colab.research.google.com/drive/1mVmrGGahOBqqT3g3VCGmPYKu8wwZDjg3?usp=sharing)
+
+---
+
+## 📁 Repository Structure
+
+```
+SmartCalendarRLDemo/
+├── models.py                  # Type-safe Action, Observation, State models
+├── client.py                  # HTTPEnvClient connecting to the environment
+├── inference.py               # Agent loop: prompt builder, action parser, repair
+├── task_definitions.py        # 4 difficulty tiers + dependency graph + curricula
+├── server/
+│   └── smart_calendar_agent_environment.py   # reset(), step(), state(), reward logic
+├── plots/
+│   ├── reward_and_loss_changes_during_training.png
+│   └── base_vs_trained_model_test_comparision.png
+├── Dockerfile
+└── openenv.yaml
+```
+
+---
+
+## 🔗 Links
+
+| Resource | Link |
+|---|---|
+| 🤗 Environment on HF Spaces | https://huggingface.co/spaces/kohantika/SmartCalendarRLDemo |
+| 🤗 Trained Model |https://huggingface.co/kohantika/smart-calendar-qwen-grpo |
+| 📓 Training Colab Notebook | https://colab.research.google.com/drive/1mVmrGGahOBqqT3g3VCGmPYKu8wwZDjg3?usp=sharing |
+| 🎥 Demo Video | https://youtu.be/bdGxckCcu10 |
+| 💻 GitHub Repository | https://github.com/bdnath1988/SmartCalendarRLDemo |
+
+---
+
